@@ -83,6 +83,73 @@ impl DriftReport {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DetectedAdminType {
+    AnsiblePlaybook,
+    AnsibleRole,
+    DockerCompose,
+    ShellProvisioner,
+    SystemdUnits,
+    RawConfiguration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredVariable {
+    pub name: String,
+    pub default_value: Option<String>,
+}
+
+impl DiscoveredVariable {
+    pub fn new(name: impl Into<String>, default_value: Option<String>) -> Self {
+        Self {
+            name: name.into(),
+            default_value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoAdminManifest {
+    admin_type: DetectedAdminType,
+    entrypoints: Vec<String>,
+    discovered_variables: Vec<DiscoveredVariable>,
+}
+
+impl RepoAdminManifest {
+    pub fn new(
+        admin_type: DetectedAdminType,
+        entrypoints: Vec<String>,
+        discovered_variables: Vec<DiscoveredVariable>,
+    ) -> Result<Self, DomainError> {
+        if entrypoints.is_empty() {
+            return Err(DomainError::ValidationError(
+                "At least one entrypoint is required for a detected admin repository".to_string(),
+            ));
+        }
+        Ok(Self {
+            admin_type,
+            entrypoints,
+            discovered_variables,
+        })
+    }
+
+    pub fn admin_type(&self) -> DetectedAdminType {
+        self.admin_type
+    }
+
+    pub fn entrypoints(&self) -> &[String] {
+        &self.entrypoints
+    }
+
+    pub fn discovered_variables(&self) -> &[DiscoveredVariable] {
+        &self.discovered_variables
+    }
+
+    pub fn is_container_oriented(&self) -> bool {
+        matches!(self.admin_type, DetectedAdminType::DockerCompose)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagedRepository {
     id: RepoId,
@@ -92,6 +159,7 @@ pub struct ManagedRepository {
     kind: RepoKind,
     sync_status: SyncStatus,
     last_commit_hash: Option<String>,
+    admin_manifest: Option<RepoAdminManifest>,
 }
 
 impl ManagedRepository {
@@ -129,6 +197,7 @@ impl ManagedRepository {
             kind,
             sync_status: SyncStatus::Pending,
             last_commit_hash: None,
+            admin_manifest: None,
         })
     }
 
@@ -160,11 +229,19 @@ impl ManagedRepository {
         self.last_commit_hash.as_deref()
     }
 
+    pub fn admin_manifest(&self) -> Option<&RepoAdminManifest> {
+        self.admin_manifest.as_ref()
+    }
+
     pub fn set_sync_status(&mut self, status: SyncStatus) {
         self.sync_status = status;
     }
 
     pub fn set_last_commit_hash(&mut self, hash: impl Into<String>) {
         self.last_commit_hash = Some(hash.into());
+    }
+
+    pub fn set_admin_manifest(&mut self, manifest: RepoAdminManifest) {
+        self.admin_manifest = Some(manifest);
     }
 }

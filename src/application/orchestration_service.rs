@@ -2,13 +2,17 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::adapters::outbound::catalog::StandardServerAdminCatalog;
+use crate::adapters::outbound::{
+    catalog::StandardServerAdminCatalog,
+    memory::stack_store::InMemoryStackStore,
+};
 use crate::domain::{
     catalog::{AdminCategory, CatalogItem},
     errors::DomainError,
     orchestration::{JobId, OrchestrationJob, RollbackPolicy},
     repository::{DriftReport, ManagedRepository, RepoId, SyncStatus},
     server::{ServerId, ServerStatus},
+    stack::{MultiRepoStack, StackId, StackRepoEntry},
 };
 use crate::ports::{
     inbound::repo_orchestrator::{RegisterRepoCommand, RepoOrchestratorPort},
@@ -19,6 +23,7 @@ use crate::ports::{
         repo_store::RepoStorePort,
         server_executor::ServerExecutorPort,
         server_store::ServerStorePort,
+        stack_store::StackStorePort,
     },
 };
 
@@ -29,6 +34,7 @@ pub struct OrchestrationService {
     executor: Arc<dyn ServerExecutorPort>,
     git_provider: Arc<dyn GitProviderPort>,
     catalog: Arc<dyn RepoCatalogPort>,
+    stack_store: Arc<dyn StackStorePort>,
 }
 
 impl OrchestrationService {
@@ -39,13 +45,14 @@ impl OrchestrationService {
         executor: Arc<dyn ServerExecutorPort>,
         git_provider: Arc<dyn GitProviderPort>,
     ) -> Self {
-        Self::new_with_catalog(
+        Self::new_with_catalog_and_stack(
             server_store,
             repo_store,
             job_store,
             executor,
             git_provider,
             Arc::new(StandardServerAdminCatalog::default()),
+            Arc::new(InMemoryStackStore::new()),
         )
     }
 
@@ -57,6 +64,26 @@ impl OrchestrationService {
         git_provider: Arc<dyn GitProviderPort>,
         catalog: Arc<dyn RepoCatalogPort>,
     ) -> Self {
+        Self::new_with_catalog_and_stack(
+            server_store,
+            repo_store,
+            job_store,
+            executor,
+            git_provider,
+            catalog,
+            Arc::new(InMemoryStackStore::new()),
+        )
+    }
+
+    pub fn new_with_catalog_and_stack(
+        server_store: Arc<dyn ServerStorePort>,
+        repo_store: Arc<dyn RepoStorePort>,
+        job_store: Arc<dyn JobStorePort>,
+        executor: Arc<dyn ServerExecutorPort>,
+        git_provider: Arc<dyn GitProviderPort>,
+        catalog: Arc<dyn RepoCatalogPort>,
+        stack_store: Arc<dyn StackStorePort>,
+    ) -> Self {
         Self {
             server_store,
             repo_store,
@@ -64,6 +91,7 @@ impl OrchestrationService {
             executor,
             git_provider,
             catalog,
+            stack_store,
         }
     }
 }
@@ -320,7 +348,6 @@ impl RepoOrchestratorPort for OrchestrationService {
                 id: catalog_id.to_string(),
             })?;
 
-        // Check OS compatibility if server specs are known
         if let Some(spec) = server.spec() {
             if !item.is_compatible_with(spec) {
                 return Err(DomainError::ValidationError(format!(
@@ -331,13 +358,135 @@ impl RepoOrchestratorPort for OrchestrationService {
             }
         }
 
-        // Import or reuse repository
         let repo = self
             .import_from_catalog(catalog_id, Some(format!("{}-applied", item.id())))
             .await?;
 
-        // Trigger orchestration
         self.trigger_orchestration_with_options(server_id, &repo.id(), RollbackPolicy::RollbackOnFailure)
             .await
+    }
+
+    async fn create_stack(
+        &self,
+        name: String,
+        description: String,
+        entries: Vec<StackRepoEntry>,
+    ) -> Result<MultiRepoStack, DomainError> {
+        // Validate that all referenced repos exist
+        for entry in &entries {
+            let _ = self.get_repo(&entry.repo_id).await?;
+        }
+
+        let stack = MultiRepoStack::new(StackId::new(), name, description, entries)?;
+        self.stack_store.save(stack.clone()).await?;
+        Ok(stack)
+    }
+
+    async fn list_stacks(&self) -> Result<Vec<MultiRepoStack>, DomainError> {
+        self.stack_store.list().await
+    }
+
+    async fn get_stack(&self, id: &StackId) -> Result<MultiRepoStack, DomainError> {
+        self.stack_store
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "MultiRepoStack",
+                id: id.to_string(),
+            })
+    }
+
+    async fn execute_stack(
+        &self,
+        server_id: &ServerId,
+        stack_id: &StackId,
+    ) -> Result<OrchestrationJob, DomainError> {
+        let mut server = self
+            .server_store
+            .find_by_id(server_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "Server",
+                id: server_id.to_string(),
+            })?;
+
+        if server.status() != ServerStatus::Online {
+            return Err(DomainError::Conflict(format!(
+                "Cannot execute stack on server '{}' with status {:?}",
+                server.name().as_str(),
+                server.status()
+            )));
+        }
+
+        let stack = self.get_stack(stack_id).await?;
+        let steps = stack.compile_to_orchestration_steps();
+
+        // Use first repo_id as anchor
+        let anchor_repo_id = stack
+            .entries()
+            .first()
+            .map(|e| e.repo_id)
+            .unwrap_or_else(RepoId::new);
+
+        let mut job = OrchestrationJob::new_with_policy(
+            JobId::new(),
+            *server_id,
+            anchor_repo_id,
+            steps,
+            RollbackPolicy::RollbackOnFailure,
+        )?;
+
+        server.acquire_lock(job.id())?;
+        self.server_store.save(server.clone()).await?;
+
+        job.start()?;
+        self.job_store.save(job.clone()).await?;
+
+        let step_count = job.steps().len();
+        let mut failed = false;
+
+        for i in 0..step_count {
+            let step_name = job.steps()[i].step.name.clone();
+            let cmd = format!("servai-run-stack-step:{}", step_name);
+
+            match self.executor.execute_command(&server, &cmd).await {
+                Ok(res) => {
+                    if res.exit_code == 0 {
+                        job.record_step_success(i, res.stdout)?;
+                    } else {
+                        job.record_step_failure(
+                            i,
+                            format!("Stack step failed: {}", res.exit_code),
+                            res.stderr,
+                        )?;
+                        failed = true;
+                        break;
+                    }
+                }
+                Err(err) => {
+                    job.record_step_failure(i, "Stack execution error", err.to_string())?;
+                    failed = true;
+                    break;
+                }
+            }
+        }
+
+        if failed {
+            let rollback_steps = job.compensating_rollback_steps();
+            for rb in rollback_steps {
+                if let Some(cmd) = rb.rollback_command {
+                    let _ = self.executor.execute_command(&server, &cmd).await;
+                }
+            }
+            job.record_rollback_completed("Stack rollback finished")?;
+        }
+
+        if let Ok(Some(mut fresh)) = self.server_store.find_by_id(server_id).await {
+            let _ = fresh.release_lock(job.id());
+            let _ = self.server_store.save(fresh).await;
+        }
+
+        self.job_store.save(job.clone()).await?;
+        Ok(job)
     }
 }

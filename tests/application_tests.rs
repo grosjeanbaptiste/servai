@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use servai::{
     adapters::outbound::{
@@ -457,4 +458,97 @@ async fn test_orchestration_service_apply_recipe_directly_to_server() {
     assert_eq!(job.status(), ExecutionStatus::Succeeded);
     assert!(!job.steps().is_empty());
 }
+
+#[tokio::test]
+async fn test_orchestration_service_multi_repo_stack_execution() {
+    use servai::domain::stack::StackRepoEntry;
+
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+    let orchestrator = OrchestrationService::new(
+        server_store.clone(),
+        repo_store.clone(),
+        job_store.clone(),
+        executor.clone(),
+        git.clone(),
+    );
+
+    // Register server
+    let server = server_service
+        .register_server(RegisterServerCommand {
+            name: "full-stack-srv".to_string(),
+            ip: "10.0.0.9".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    server_service.health_check(&server.id()).await.unwrap();
+
+    // Register two distinct server administration repositories
+    let repo_sec = orchestrator
+        .register_repo(RegisterRepoCommand {
+            name: "admin-security".to_string(),
+            url: "https://github.com/dev-sec/ansible-collection-hardening.git".to_string(),
+            target_ref: GitRef::Branch("main".to_string()),
+            kind: RepoKind::Playbook,
+        })
+        .await
+        .unwrap();
+
+    let repo_docker = orchestrator
+        .register_repo(RegisterRepoCommand {
+            name: "admin-docker".to_string(),
+            url: "https://github.com/geerlingguy/ansible-role-docker.git".to_string(),
+            target_ref: GitRef::Branch("master".to_string()),
+            kind: RepoKind::Playbook,
+        })
+        .await
+        .unwrap();
+
+    // Compose them into a single multi-repo administration stack
+    let stack = orchestrator
+        .create_stack(
+            "production-baseline-stack".to_string(),
+            "Chains OS hardening and Docker runtime deployment".to_string(),
+            vec![
+                StackRepoEntry {
+                    repo_id: repo_sec.id(),
+                    order: 1,
+                    step_name: "apply-hardening".to_string(),
+                    command: "ansible-playbook hardening.yml".to_string(),
+                    rollback_command: None,
+                    overrides: HashMap::new(),
+                },
+                StackRepoEntry {
+                    repo_id: repo_docker.id(),
+                    order: 2,
+                    step_name: "install-docker".to_string(),
+                    command: "ansible-playbook docker.yml".to_string(),
+                    rollback_command: None,
+                    overrides: HashMap::new(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    // Execute the composite multi-repo stack on the server
+    let job = orchestrator
+        .execute_stack(&server.id(), &stack.id())
+        .await
+        .unwrap();
+
+    assert_eq!(job.status(), ExecutionStatus::Succeeded);
+    assert_eq!(job.steps().len(), 2);
+    assert_eq!(job.steps()[0].step.name, "apply-hardening");
+    assert_eq!(job.steps()[1].step.name, "install-docker");
+}
+
 

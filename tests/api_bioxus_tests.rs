@@ -693,4 +693,191 @@ async fn test_bioxus_api_catalog_and_recipe_application() {
     assert_eq!(job_json["status"], "Succeeded");
 }
 
+#[tokio::test]
+async fn test_bioxus_api_multi_repo_stack_endpoints() {
+    let app = setup_test_app();
+
+    // 1. Register two repositories
+    let r1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/repos")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "r1-hardening",
+                        "url": "https://github.com/dev-sec/ansible-collection-hardening.git",
+                        "target_ref": { "Branch": "main" },
+                        "kind": "Playbook"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let r1_json: Value = serde_json::from_slice(
+        &r1.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let r1_id = r1_json["id"].as_str().unwrap();
+
+    let r2 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/repos")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "r2-docker",
+                        "url": "https://github.com/geerlingguy/ansible-role-docker.git",
+                        "target_ref": { "Branch": "master" },
+                        "kind": "Playbook"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let r2_json: Value = serde_json::from_slice(
+        &r2.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let r2_id = r2_json["id"].as_str().unwrap();
+
+    // 2. POST /api/v1/stacks (compose multi-repo stack)
+    let stack_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/stacks")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "bioxus-web-stack",
+                        "description": "Hardening + Docker stack",
+                        "entries": [
+                            {
+                                "repo_id": r1_id,
+                                "order": 1,
+                                "step_name": "h-step",
+                                "command": "apply.sh",
+                                "rollback_command": null,
+                                "overrides": {}
+                            },
+                            {
+                                "repo_id": r2_id,
+                                "order": 2,
+                                "step_name": "d-step",
+                                "command": "compose.sh",
+                                "rollback_command": null,
+                                "overrides": {}
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(stack_res.status(), StatusCode::CREATED);
+    let stack_json: Value = serde_json::from_slice(
+        &stack_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let stack_id = stack_json["id"].as_str().unwrap();
+
+    // 3. GET /api/v1/stacks
+    let list_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/stacks")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list_res.status(), StatusCode::OK);
+    let list_json: Vec<Value> = serde_json::from_slice(
+        &list_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(list_json.len(), 1);
+    assert_eq!(list_json[0]["id"], stack_id);
+
+    // 4. Register server & execute stack
+    let srv_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/servers")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "stack-target-node",
+                        "ip": "10.0.0.100",
+                        "port": 22,
+                        "credentials": { "Agent": null },
+                        "tags": []
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let srv_json: Value = serde_json::from_slice(
+        &srv_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let server_id = srv_json["id"].as_str().unwrap();
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/health", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // POST /api/v1/servers/:id/stacks/:stack_id/apply
+    let apply_stack_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/servers/{}/stacks/{}/apply",
+                    server_id, stack_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(apply_stack_res.status(), StatusCode::CREATED);
+    let job_out: Value = serde_json::from_slice(
+        &apply_stack_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(job_out["status"], "Succeeded");
+}
+
+
 

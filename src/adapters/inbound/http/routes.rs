@@ -15,6 +15,7 @@ use crate::adapters::inbound::http::{
         execute_on_server, get_server, get_server_metrics, health_check_server, list_servers,
         manage_service, reboot_server, register_server, set_server_maintenance, AppState,
     },
+    stack_handlers::{create_stack, execute_stack_handler, list_stacks},
 };
 use crate::ports::inbound::{
     repo_orchestrator::RepoOrchestratorPort,
@@ -56,6 +57,10 @@ pub fn create_router(
             "/api/v1/servers/{id}/recipes/{recipe_id}/apply",
             post(apply_recipe),
         )
+        .route(
+            "/api/v1/servers/{id}/stacks/{stack_id}/apply",
+            post(execute_stack_handler),
+        )
         // Repository management routes
         .route("/api/v1/repos", post(register_repo).get(list_repos))
         .route("/api/v1/repos/{id}", get(get_repo))
@@ -63,6 +68,8 @@ pub fn create_router(
         // Catalog of curated server administration repos
         .route("/api/v1/catalog", get(list_catalog))
         .route("/api/v1/catalog/{id}/import", post(import_catalog_item))
+        // Multi-repo stacks
+        .route("/api/v1/stacks", post(create_stack).get(list_stacks))
         // Orchestration routes
         .route("/api/v1/orchestrations", post(trigger_orchestration))
         .route("/api/v1/orchestrations/{id}", get(get_orchestration))

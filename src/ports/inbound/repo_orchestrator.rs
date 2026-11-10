@@ -8,6 +8,7 @@ use crate::domain::{
     orchestration::{JobId, OrchestrationJob, RollbackPolicy},
     repository::{DriftReport, GitRef, ManagedRepository, RepoId, RepoKind},
     server::ServerId,
+    stack::{MultiRepoStack, StackId, StackRepoEntry},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,5 +59,20 @@ pub trait RepoOrchestratorPort: Send + Sync {
         server_id: &ServerId,
         catalog_id: &str,
         params: HashMap<String, String>,
+    ) -> Result<OrchestrationJob, DomainError>;
+
+    // Multi-repo composition and stack execution
+    async fn create_stack(
+        &self,
+        name: String,
+        description: String,
+        entries: Vec<StackRepoEntry>,
+    ) -> Result<MultiRepoStack, DomainError>;
+    async fn list_stacks(&self) -> Result<Vec<MultiRepoStack>, DomainError>;
+    async fn get_stack(&self, id: &StackId) -> Result<MultiRepoStack, DomainError>;
+    async fn execute_stack(
+        &self,
+        server_id: &ServerId,
+        stack_id: &StackId,
     ) -> Result<OrchestrationJob, DomainError>;
 }
