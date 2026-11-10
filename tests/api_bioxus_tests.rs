@@ -879,5 +879,114 @@ async fn test_bioxus_api_multi_repo_stack_endpoints() {
     assert_eq!(job_out["status"], "Succeeded");
 }
 
+#[tokio::test]
+async fn test_bioxus_api_registry_search_and_preset_installation() {
+    let app = setup_test_app();
+
+    // 1. GET /api/v1/registry/search?keyword=docker
+    let search_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/registry/search?keyword=docker")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(search_res.status(), StatusCode::OK);
+    let pkgs: Vec<Value> = serde_json::from_slice(
+        &search_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert!(!pkgs.is_empty());
+    assert!(pkgs.iter().any(|p| p["id"] == "geerlingguy-docker"));
+
+    // 2. GET /api/v1/registry/presets
+    let presets_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/registry/presets")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(presets_res.status(), StatusCode::OK);
+    let presets: Vec<Value> = serde_json::from_slice(
+        &presets_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert!(presets.iter().any(|p| p["id"] == "secure-web-baseline"));
+
+    // 3. Register and activate server
+    let srv_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/servers")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "registry-test-node",
+                        "ip": "10.0.0.123",
+                        "port": 22,
+                        "credentials": { "Agent": null },
+                        "tags": []
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let srv_json: Value = serde_json::from_slice(
+        &srv_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let server_id = srv_json["id"].as_str().unwrap();
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/health", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 4. POST /api/v1/servers/:id/presets/:preset_id/apply
+    let apply_preset_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/servers/{}/presets/secure-web-baseline/apply",
+                    server_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(apply_preset_res.status(), StatusCode::CREATED);
+    let job_out: Value = serde_json::from_slice(
+        &apply_preset_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(job_out["status"], "Succeeded");
+}
+
+
 
 

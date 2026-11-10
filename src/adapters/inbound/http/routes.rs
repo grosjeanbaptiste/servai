@@ -10,6 +10,9 @@ use crate::adapters::inbound::http::{
     orchestration_handlers::{
         cancel_orchestration, detect_drift_handler, get_orchestration, trigger_orchestration,
     },
+    registry_handlers::{
+        apply_preset_handler, install_package_handler, list_presets_handler, search_registry_handler,
+    },
     repo_handlers::{get_repo, list_repos, register_repo, sync_repo},
     server_handlers::{
         execute_on_server, get_server, get_server_metrics, health_check_server, list_servers,
@@ -61,6 +64,14 @@ pub fn create_router(
             "/api/v1/servers/{id}/stacks/{stack_id}/apply",
             post(execute_stack_handler),
         )
+        .route(
+            "/api/v1/servers/{id}/packages/{package_id}/install",
+            post(install_package_handler),
+        )
+        .route(
+            "/api/v1/servers/{id}/presets/{preset_id}/apply",
+            post(apply_preset_handler),
+        )
         // Repository management routes
         .route("/api/v1/repos", post(register_repo).get(list_repos))
         .route("/api/v1/repos/{id}", get(get_repo))
@@ -68,6 +79,9 @@ pub fn create_router(
         // Catalog of curated server administration repos
         .route("/api/v1/catalog", get(list_catalog))
         .route("/api/v1/catalog/{id}/import", post(import_catalog_item))
+        // Multi-source server administration registry
+        .route("/api/v1/registry/search", get(search_registry_handler))
+        .route("/api/v1/registry/presets", get(list_presets_handler))
         // Multi-repo stacks
         .route("/api/v1/stacks", post(create_stack).get(list_stacks))
         // Orchestration routes

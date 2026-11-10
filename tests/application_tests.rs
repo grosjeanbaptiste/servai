@@ -551,4 +551,120 @@ async fn test_orchestration_service_multi_repo_stack_execution() {
     assert_eq!(job.steps()[1].step.name, "install-docker");
 }
 
+#[tokio::test]
+async fn test_orchestration_service_search_registry_and_dependency_resolution() {
+    use servai::domain::catalog::AdminCategory;
+    use servai::domain::registry::RegistryQuery;
+
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let orchestrator = OrchestrationService::new(
+        server_store,
+        repo_store,
+        job_store,
+        executor,
+        git,
+    );
+
+    // Search for container packages
+    let query = RegistryQuery::builder()
+        .category(AdminCategory::Containers)
+        .build();
+
+    let packages = orchestrator.search_registry(query).await.unwrap();
+    assert!(!packages.is_empty());
+    assert!(packages.iter().any(|p| p.id() == "geerlingguy-docker"));
+
+    // List server profile presets
+    let presets = orchestrator.list_profile_presets().await.unwrap();
+    assert!(presets.len() >= 4);
+    assert!(presets.iter().any(|p| p.id() == "secure-web-baseline"));
+}
+
+#[tokio::test]
+async fn test_orchestration_service_install_package_with_auto_dependencies() {
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+    let orchestrator = OrchestrationService::new(
+        server_store.clone(),
+        repo_store.clone(),
+        job_store.clone(),
+        executor.clone(),
+        git.clone(),
+    );
+
+    let server = server_service
+        .register_server(RegisterServerCommand {
+            name: "wireguard-host".to_string(),
+            ip: "10.0.0.33".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    server_service.health_check(&server.id()).await.unwrap();
+
+    // "linuxserver-wireguard" depends on "geerlingguy-docker"
+    // Orchestrator must resolve and execute both in dependency order!
+    let job = orchestrator
+        .install_package_with_dependencies(&server.id(), "linuxserver-wireguard", HashMap::new())
+        .await
+        .unwrap();
+
+    assert_eq!(job.status(), ExecutionStatus::Succeeded);
+    assert_eq!(job.steps().len(), 2);
+    assert_eq!(job.steps()[0].step.name, "install-geerlingguy-docker");
+    assert_eq!(job.steps()[1].step.name, "install-linuxserver-wireguard");
+}
+
+#[tokio::test]
+async fn test_orchestration_service_apply_profile_preset() {
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+    let orchestrator = OrchestrationService::new(
+        server_store.clone(),
+        repo_store.clone(),
+        job_store.clone(),
+        executor.clone(),
+        git.clone(),
+    );
+
+    let server = server_service
+        .register_server(RegisterServerCommand {
+            name: "web-baseline-srv".to_string(),
+            ip: "10.0.0.44".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    server_service.health_check(&server.id()).await.unwrap();
+
+    // Apply "secure-web-baseline" preset (bundles 3 admin packages)
+    let job = orchestrator
+        .apply_profile_preset(&server.id(), "secure-web-baseline")
+        .await
+        .unwrap();
+
+    assert_eq!(job.status(), ExecutionStatus::Succeeded);
+    assert_eq!(job.steps().len(), 3);
+}
+
+
 

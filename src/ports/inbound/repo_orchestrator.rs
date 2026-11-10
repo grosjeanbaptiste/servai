@@ -6,6 +6,7 @@ use crate::domain::{
     catalog::{AdminCategory, CatalogItem},
     errors::DomainError,
     orchestration::{JobId, OrchestrationJob, RollbackPolicy},
+    registry::{AdminPackage, RegistryQuery, ServerProfilePreset},
     repository::{DriftReport, GitRef, ManagedRepository, RepoId, RepoKind},
     server::ServerId,
     stack::{MultiRepoStack, StackId, StackRepoEntry},
@@ -74,5 +75,23 @@ pub trait RepoOrchestratorPort: Send + Sync {
         &self,
         server_id: &ServerId,
         stack_id: &StackId,
+    ) -> Result<OrchestrationJob, DomainError>;
+
+    // Multi-source ecosystem registry
+    async fn search_registry(
+        &self,
+        query: RegistryQuery,
+    ) -> Result<Vec<AdminPackage>, DomainError>;
+    async fn list_profile_presets(&self) -> Result<Vec<ServerProfilePreset>, DomainError>;
+    async fn install_package_with_dependencies(
+        &self,
+        server_id: &ServerId,
+        package_id: &str,
+        params: HashMap<String, String>,
+    ) -> Result<OrchestrationJob, DomainError>;
+    async fn apply_profile_preset(
+        &self,
+        server_id: &ServerId,
+        preset_id: &str,
     ) -> Result<OrchestrationJob, DomainError>;
 }

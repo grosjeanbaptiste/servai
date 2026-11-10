@@ -5,18 +5,21 @@ use std::sync::Arc;
 use crate::adapters::outbound::{
     catalog::StandardServerAdminCatalog,
     memory::stack_store::InMemoryStackStore,
+    registry::MultiSourceAdminRegistry,
 };
 use crate::domain::{
     catalog::{AdminCategory, CatalogItem},
     errors::DomainError,
     orchestration::{JobId, OrchestrationJob, RollbackPolicy},
-    repository::{DriftReport, ManagedRepository, RepoId, SyncStatus},
+    registry::{AdminPackage, RegistryQuery, ServerProfilePreset},
+    repository::{DriftReport, GitRef, ManagedRepository, RepoId, RepoKind, SyncStatus},
     server::{ServerId, ServerStatus},
     stack::{MultiRepoStack, StackId, StackRepoEntry},
 };
 use crate::ports::{
     inbound::repo_orchestrator::{RegisterRepoCommand, RepoOrchestratorPort},
     outbound::{
+        admin_registry::AdminRegistryPort,
         git_provider::GitProviderPort,
         job_store::JobStorePort,
         repo_catalog::RepoCatalogPort,
@@ -35,6 +38,7 @@ pub struct OrchestrationService {
     git_provider: Arc<dyn GitProviderPort>,
     catalog: Arc<dyn RepoCatalogPort>,
     stack_store: Arc<dyn StackStorePort>,
+    registry: Arc<dyn AdminRegistryPort>,
 }
 
 impl OrchestrationService {
@@ -45,7 +49,7 @@ impl OrchestrationService {
         executor: Arc<dyn ServerExecutorPort>,
         git_provider: Arc<dyn GitProviderPort>,
     ) -> Self {
-        Self::new_with_catalog_and_stack(
+        Self::new_full(
             server_store,
             repo_store,
             job_store,
@@ -53,6 +57,7 @@ impl OrchestrationService {
             git_provider,
             Arc::new(StandardServerAdminCatalog::default()),
             Arc::new(InMemoryStackStore::new()),
+            Arc::new(MultiSourceAdminRegistry::default()),
         )
     }
 
@@ -64,7 +69,7 @@ impl OrchestrationService {
         git_provider: Arc<dyn GitProviderPort>,
         catalog: Arc<dyn RepoCatalogPort>,
     ) -> Self {
-        Self::new_with_catalog_and_stack(
+        Self::new_full(
             server_store,
             repo_store,
             job_store,
@@ -72,10 +77,11 @@ impl OrchestrationService {
             git_provider,
             catalog,
             Arc::new(InMemoryStackStore::new()),
+            Arc::new(MultiSourceAdminRegistry::default()),
         )
     }
 
-    pub fn new_with_catalog_and_stack(
+    pub fn new_full(
         server_store: Arc<dyn ServerStorePort>,
         repo_store: Arc<dyn RepoStorePort>,
         job_store: Arc<dyn JobStorePort>,
@@ -83,6 +89,7 @@ impl OrchestrationService {
         git_provider: Arc<dyn GitProviderPort>,
         catalog: Arc<dyn RepoCatalogPort>,
         stack_store: Arc<dyn StackStorePort>,
+        registry: Arc<dyn AdminRegistryPort>,
     ) -> Self {
         Self {
             server_store,
@@ -92,6 +99,7 @@ impl OrchestrationService {
             git_provider,
             catalog,
             stack_store,
+            registry,
         }
     }
 }
@@ -372,7 +380,6 @@ impl RepoOrchestratorPort for OrchestrationService {
         description: String,
         entries: Vec<StackRepoEntry>,
     ) -> Result<MultiRepoStack, DomainError> {
-        // Validate that all referenced repos exist
         for entry in &entries {
             let _ = self.get_repo(&entry.repo_id).await?;
         }
@@ -421,7 +428,6 @@ impl RepoOrchestratorPort for OrchestrationService {
         let stack = self.get_stack(stack_id).await?;
         let steps = stack.compile_to_orchestration_steps();
 
-        // Use first repo_id as anchor
         let anchor_repo_id = stack
             .entries()
             .first()
@@ -488,5 +494,134 @@ impl RepoOrchestratorPort for OrchestrationService {
 
         self.job_store.save(job.clone()).await?;
         Ok(job)
+    }
+
+    async fn search_registry(
+        &self,
+        query: RegistryQuery,
+    ) -> Result<Vec<AdminPackage>, DomainError> {
+        self.registry.search(&query).await
+    }
+
+    async fn list_profile_presets(&self) -> Result<Vec<ServerProfilePreset>, DomainError> {
+        self.registry.list_presets().await
+    }
+
+    async fn install_package_with_dependencies(
+        &self,
+        server_id: &ServerId,
+        package_id: &str,
+        _params: HashMap<String, String>,
+    ) -> Result<OrchestrationJob, DomainError> {
+        let server = self
+            .server_store
+            .find_by_id(server_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "Server",
+                id: server_id.to_string(),
+            })?;
+
+        let resolved_packages = self.registry.resolve_dependencies(package_id).await?;
+
+        // Check compatibility
+        if let Some(spec) = server.spec() {
+            for pkg in &resolved_packages {
+                if !pkg.is_compatible_with(spec) {
+                    return Err(DomainError::ValidationError(format!(
+                        "Package '{}' is not compatible with server OS '{}'",
+                        pkg.name(),
+                        spec.os
+                    )));
+                }
+            }
+        }
+
+        // Import all resolved packages into managed repositories
+        let mut entries = Vec::new();
+        for (idx, pkg) in resolved_packages.iter().enumerate() {
+            let repo = ManagedRepository::new(
+                RepoId::new(),
+                format!("{}-managed", pkg.id()),
+                pkg.repo_url().to_string(),
+                GitRef::Branch(pkg.target_ref().to_string()),
+                RepoKind::Playbook,
+            )?;
+            self.repo_store.save(repo.clone()).await?;
+
+            entries.push(StackRepoEntry {
+                repo_id: repo.id(),
+                order: (idx + 1) as u32,
+                step_name: format!("install-{}", pkg.id()),
+                command: format!("ansible-playbook -i inventory deploy-{}.yml", pkg.id()),
+                rollback_command: Some(format!("ansible-playbook -i inventory rollback-{}.yml", pkg.id())),
+                overrides: HashMap::new(),
+            });
+        }
+
+        let stack = self
+            .create_stack(
+                format!("{}-bundle-stack", package_id),
+                format!("Installation stack for {}", package_id),
+                entries,
+            )
+            .await?;
+
+        self.execute_stack(server_id, &stack.id()).await
+    }
+
+    async fn apply_profile_preset(
+        &self,
+        server_id: &ServerId,
+        preset_id: &str,
+    ) -> Result<OrchestrationJob, DomainError> {
+        let presets = self.registry.list_presets().await?;
+        let preset = presets
+            .iter()
+            .find(|p| p.id() == preset_id)
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "ServerProfilePreset",
+                id: preset_id.to_string(),
+            })?;
+
+        let mut entries = Vec::new();
+        for (idx, pkg_id) in preset.package_ids().iter().enumerate() {
+            let pkg = self
+                .registry
+                .get_package(pkg_id)
+                .await?
+                .ok_or_else(|| DomainError::NotFound {
+                    entity: "AdminPackage",
+                    id: pkg_id.clone(),
+                })?;
+
+            let repo = ManagedRepository::new(
+                RepoId::new(),
+                format!("{}-preset-repo", pkg.id()),
+                pkg.repo_url().to_string(),
+                GitRef::Branch(pkg.target_ref().to_string()),
+                RepoKind::Playbook,
+            )?;
+            self.repo_store.save(repo.clone()).await?;
+
+            entries.push(StackRepoEntry {
+                repo_id: repo.id(),
+                order: (idx + 1) as u32,
+                step_name: format!("deploy-preset-{}", pkg.id()),
+                command: format!("ansible-playbook deploy-{}.yml", pkg.id()),
+                rollback_command: None,
+                overrides: HashMap::new(),
+            });
+        }
+
+        let stack = self
+            .create_stack(
+                format!("{}-preset-stack", preset.id()),
+                preset.description().to_string(),
+                entries,
+            )
+            .await?;
+
+        self.execute_stack(server_id, &stack.id()).await
     }
 }

@@ -1,3 +1,4 @@
+pub mod admin_registry;
 pub mod git_provider;
 pub mod job_store;
 pub mod repo_catalog;
