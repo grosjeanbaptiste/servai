@@ -17,9 +17,12 @@ use servai::{
         repository::{GitRef, RepoKind, SyncStatus},
         server::{ServerStatus, SshCredentials},
     },
-    ports::inbound::{
-        repo_orchestrator::{RegisterRepoCommand, RepoOrchestratorPort},
-        server_admin::ServerAdminPort,
+    ports::{
+        inbound::{
+            repo_orchestrator::{RegisterRepoCommand, RepoOrchestratorPort},
+            server_admin::ServerAdminPort,
+        },
+        outbound::repo_store::RepoStorePort,
     },
 };
 
@@ -355,3 +358,103 @@ async fn test_orchestration_service_drift_detection() {
     let drift = orchestrator.detect_drift(&server.id(), &repo.id()).await.unwrap();
     assert!(!drift.has_drift());
 }
+
+#[tokio::test]
+async fn test_orchestration_service_browse_and_import_admin_catalog() {
+    use servai::domain::catalog::AdminCategory;
+    use servai::adapters::outbound::catalog::StandardServerAdminCatalog;
+
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+    let catalog = Arc::new(StandardServerAdminCatalog::default());
+
+    let orchestrator = OrchestrationService::new_with_catalog(
+        server_store,
+        repo_store.clone(),
+        job_store,
+        executor,
+        git,
+        catalog,
+    );
+
+    // List all server administration repositories in the catalog
+    let all_items = orchestrator.list_catalog(None).await.unwrap();
+    assert!(all_items.len() >= 6);
+
+    // Filter by Security category
+    let security_items = orchestrator
+        .list_catalog(Some(AdminCategory::Security))
+        .await
+        .unwrap();
+    assert!(!security_items.is_empty());
+    assert!(security_items.iter().any(|item| item.id() == "linux-hardening"));
+
+    // Import the linux-hardening repo into managed repos
+    let imported_repo = orchestrator
+        .import_from_catalog("linux-hardening", Some("my-company-hardening".to_string()))
+        .await
+        .unwrap();
+
+    assert_eq!(imported_repo.name(), "my-company-hardening");
+    assert_eq!(
+        imported_repo.url(),
+        "https://github.com/dev-sec/ansible-collection-hardening.git"
+    );
+
+    // Verify it is now saved in the repo store
+    let repos = repo_store.list().await.unwrap();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].id(), imported_repo.id());
+}
+
+#[tokio::test]
+async fn test_orchestration_service_apply_recipe_directly_to_server() {
+    use servai::adapters::outbound::catalog::StandardServerAdminCatalog;
+    use std::collections::HashMap;
+
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+    let catalog = Arc::new(StandardServerAdminCatalog::default());
+
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+    let orchestrator = OrchestrationService::new_with_catalog(
+        server_store.clone(),
+        repo_store.clone(),
+        job_store.clone(),
+        executor.clone(),
+        git.clone(),
+        catalog,
+    );
+
+    // Register & healthcheck server (Ubuntu)
+    let server = server_service
+        .register_server(RegisterServerCommand {
+            name: "prod-bastion".to_string(),
+            ip: "10.0.0.88".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec!["bastion".to_string()],
+        })
+        .await
+        .unwrap();
+    server_service.health_check(&server.id()).await.unwrap();
+
+    let mut params = HashMap::new();
+    params.insert("ssh_port".to_string(), "2222".to_string());
+
+    // Apply "linux-hardening" recipe directly
+    let job = orchestrator
+        .apply_recipe(&server.id(), "linux-hardening", params)
+        .await
+        .unwrap();
+
+    assert_eq!(job.status(), ExecutionStatus::Succeeded);
+    assert!(!job.steps().is_empty());
+}
+

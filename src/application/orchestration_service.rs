@@ -1,7 +1,10 @@
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::adapters::outbound::catalog::StandardServerAdminCatalog;
 use crate::domain::{
+    catalog::{AdminCategory, CatalogItem},
     errors::DomainError,
     orchestration::{JobId, OrchestrationJob, RollbackPolicy},
     repository::{DriftReport, ManagedRepository, RepoId, SyncStatus},
@@ -12,6 +15,7 @@ use crate::ports::{
     outbound::{
         git_provider::GitProviderPort,
         job_store::JobStorePort,
+        repo_catalog::RepoCatalogPort,
         repo_store::RepoStorePort,
         server_executor::ServerExecutorPort,
         server_store::ServerStorePort,
@@ -24,6 +28,7 @@ pub struct OrchestrationService {
     job_store: Arc<dyn JobStorePort>,
     executor: Arc<dyn ServerExecutorPort>,
     git_provider: Arc<dyn GitProviderPort>,
+    catalog: Arc<dyn RepoCatalogPort>,
 }
 
 impl OrchestrationService {
@@ -34,12 +39,31 @@ impl OrchestrationService {
         executor: Arc<dyn ServerExecutorPort>,
         git_provider: Arc<dyn GitProviderPort>,
     ) -> Self {
+        Self::new_with_catalog(
+            server_store,
+            repo_store,
+            job_store,
+            executor,
+            git_provider,
+            Arc::new(StandardServerAdminCatalog::default()),
+        )
+    }
+
+    pub fn new_with_catalog(
+        server_store: Arc<dyn ServerStorePort>,
+        repo_store: Arc<dyn RepoStorePort>,
+        job_store: Arc<dyn JobStorePort>,
+        executor: Arc<dyn ServerExecutorPort>,
+        git_provider: Arc<dyn GitProviderPort>,
+        catalog: Arc<dyn RepoCatalogPort>,
+    ) -> Self {
         Self {
             server_store,
             repo_store,
             job_store,
             executor,
             git_provider,
+            catalog,
         }
     }
 }
@@ -231,5 +255,89 @@ impl RepoOrchestratorPort for OrchestrationService {
         let repo = self.get_repo(repo_id).await?;
 
         self.git_provider.detect_drift(server_id, &repo).await
+    }
+
+    async fn list_catalog(
+        &self,
+        category: Option<AdminCategory>,
+    ) -> Result<Vec<CatalogItem>, DomainError> {
+        let items = self.catalog.list_catalog().await?;
+        if let Some(cat) = category {
+            Ok(items.into_iter().filter(|i| i.category() == cat).collect())
+        } else {
+            Ok(items)
+        }
+    }
+
+    async fn import_from_catalog(
+        &self,
+        catalog_id: &str,
+        custom_name: Option<String>,
+    ) -> Result<ManagedRepository, DomainError> {
+        let item = self
+            .catalog
+            .find_catalog_item(catalog_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "CatalogItem",
+                id: catalog_id.to_string(),
+            })?;
+
+        let name = custom_name.unwrap_or_else(|| item.name().to_string());
+        let repo = ManagedRepository::new(
+            RepoId::new(),
+            name,
+            item.upstream_url().to_string(),
+            item.target_ref().clone(),
+            item.kind(),
+        )?;
+
+        self.repo_store.save(repo.clone()).await?;
+        Ok(repo)
+    }
+
+    async fn apply_recipe(
+        &self,
+        server_id: &ServerId,
+        catalog_id: &str,
+        _params: HashMap<String, String>,
+    ) -> Result<OrchestrationJob, DomainError> {
+        let server = self
+            .server_store
+            .find_by_id(server_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "Server",
+                id: server_id.to_string(),
+            })?;
+
+        let item = self
+            .catalog
+            .find_catalog_item(catalog_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "CatalogItem",
+                id: catalog_id.to_string(),
+            })?;
+
+        // Check OS compatibility if server specs are known
+        if let Some(spec) = server.spec() {
+            if !item.is_compatible_with(spec) {
+                return Err(DomainError::ValidationError(format!(
+                    "Recipe '{}' is not compatible with server OS '{}'",
+                    item.name(),
+                    spec.os
+                )));
+            }
+        }
+
+        // Import or reuse repository
+        let repo = self
+            .import_from_catalog(catalog_id, Some(format!("{}-applied", item.id())))
+            .await?;
+
+        // Trigger orchestration
+        self.trigger_orchestration_with_options(server_id, &repo.id(), RollbackPolicy::RollbackOnFailure)
+            .await
     }
 }

@@ -1,3 +1,4 @@
+pub mod catalog_handlers;
 pub mod error_response;
 pub mod orchestration_handlers;
 pub mod repo_handlers;

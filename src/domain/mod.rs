@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod errors;
 pub mod orchestration;
 pub mod repository;

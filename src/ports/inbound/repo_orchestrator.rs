@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::domain::{
+    catalog::{AdminCategory, CatalogItem},
     errors::DomainError,
     orchestration::{JobId, OrchestrationJob, RollbackPolicy},
     repository::{DriftReport, GitRef, ManagedRepository, RepoId, RepoKind},
@@ -40,4 +42,21 @@ pub trait RepoOrchestratorPort: Send + Sync {
         server_id: &ServerId,
         repo_id: &RepoId,
     ) -> Result<DriftReport, DomainError>;
+
+    // Catalog integration for reusing server administration repos
+    async fn list_catalog(
+        &self,
+        category: Option<AdminCategory>,
+    ) -> Result<Vec<CatalogItem>, DomainError>;
+    async fn import_from_catalog(
+        &self,
+        catalog_id: &str,
+        custom_name: Option<String>,
+    ) -> Result<ManagedRepository, DomainError>;
+    async fn apply_recipe(
+        &self,
+        server_id: &ServerId,
+        catalog_id: &str,
+        params: HashMap<String, String>,
+    ) -> Result<OrchestrationJob, DomainError>;
 }

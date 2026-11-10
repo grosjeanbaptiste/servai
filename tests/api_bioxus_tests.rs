@@ -570,3 +570,127 @@ async fn test_bioxus_api_drift_and_cancellation() {
     assert_eq!(drift_json["has_drift"], false);
 }
 
+#[tokio::test]
+async fn test_bioxus_api_catalog_and_recipe_application() {
+    let app = setup_test_app();
+
+    // 1. GET /api/v1/catalog
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/catalog")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let catalog: Vec<Value> = serde_json::from_slice(
+        &res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert!(catalog.len() >= 6);
+    assert!(catalog.iter().any(|item| item["id"] == "linux-hardening"));
+
+    // 2. POST /api/v1/catalog/linux-hardening/import
+    let import_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/catalog/linux-hardening/import")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "custom_name": "custom-hardening"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(import_res.status(), StatusCode::CREATED);
+    let imported: Value = serde_json::from_slice(
+        &import_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(imported["name"], "custom-hardening");
+
+    // 3. Register server and apply recipe directly
+    let srv_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/servers")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "recipe-srv",
+                        "ip": "10.0.0.77",
+                        "port": 22,
+                        "credentials": { "Agent": null },
+                        "tags": []
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let srv_json: Value = serde_json::from_slice(
+        &srv_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let server_id = srv_json["id"].as_str().unwrap();
+
+    // Activate server
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/health", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // POST /api/v1/servers/:id/recipes/:recipe_id/apply
+    let apply_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/servers/{}/recipes/docker-engine-compose/apply",
+                    server_id
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "parameters": {
+                            "docker_storage_driver": "overlay2"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(apply_res.status(), StatusCode::CREATED);
+    let job_json: Value = serde_json::from_slice(
+        &apply_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(job_json["status"], "Succeeded");
+}
+
+

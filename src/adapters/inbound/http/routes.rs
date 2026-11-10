@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::adapters::inbound::http::{
+    catalog_handlers::{apply_recipe, import_catalog_item, list_catalog},
     orchestration_handlers::{
         cancel_orchestration, detect_drift_handler, get_orchestration, trigger_orchestration,
     },
@@ -51,10 +52,17 @@ pub fn create_router(
             post(manage_service),
         )
         .route("/api/v1/servers/{id}/reboot", post(reboot_server))
+        .route(
+            "/api/v1/servers/{id}/recipes/{recipe_id}/apply",
+            post(apply_recipe),
+        )
         // Repository management routes
         .route("/api/v1/repos", post(register_repo).get(list_repos))
         .route("/api/v1/repos/{id}", get(get_repo))
         .route("/api/v1/repos/{id}/sync", post(sync_repo))
+        // Catalog of curated server administration repos
+        .route("/api/v1/catalog", get(list_catalog))
+        .route("/api/v1/catalog/{id}/import", post(import_catalog_item))
         // Orchestration routes
         .route("/api/v1/orchestrations", post(trigger_orchestration))
         .route("/api/v1/orchestrations/{id}", get(get_orchestration))
