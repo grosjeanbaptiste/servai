@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
+pub use crate::ports::inbound::server_admin::RegisterServerCommand;
 use crate::domain::{
     errors::DomainError,
-    server::{HostAddress, Server, ServerId, ServerName, ServerStatus},
+    server::{HostAddress, Server, ServerId, ServerMetrics, ServerName, ServerStatus, ServiceAction, ServiceStatus},
 };
-pub use crate::ports::inbound::server_admin::RegisterServerCommand;
 use crate::ports::{
     inbound::server_admin::ServerAdminPort,
     outbound::{
@@ -106,5 +106,42 @@ impl ServerAdminPort for ServerService {
         }
 
         self.executor.execute_command(&server, command).await
+    }
+
+    async fn manage_service(
+        &self,
+        id: &ServerId,
+        service: &str,
+        action: ServiceAction,
+    ) -> Result<ServiceStatus, DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() != ServerStatus::Online {
+            return Err(DomainError::Conflict(format!(
+                "Cannot manage service on server with status {:?}",
+                server.status()
+            )));
+        }
+
+        self.executor.manage_system_service(&server, service, action).await
+    }
+
+    async fn get_metrics(&self, id: &ServerId) -> Result<ServerMetrics, DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() != ServerStatus::Online {
+            return Err(DomainError::Conflict(format!(
+                "Cannot collect metrics on server with status {:?}",
+                server.status()
+            )));
+        }
+
+        self.executor.collect_metrics(&server).await
+    }
+
+    async fn reboot_server(&self, id: &ServerId) -> Result<(), DomainError> {
+        let mut server = self.get_server(id).await?;
+        self.executor.reboot(&server).await?;
+        server.transition_to(ServerStatus::Maintenance)?;
+        self.server_store.save(server).await?;
+        Ok(())
     }
 }

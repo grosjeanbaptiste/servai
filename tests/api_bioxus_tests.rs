@@ -363,3 +363,210 @@ async fn test_bioxus_api_validation_and_not_found() {
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn test_bioxus_api_metrics_and_service_management() {
+    let app = setup_test_app();
+
+    // Register and activate server
+    let srv_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/servers")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "bioxus-metrics-node",
+                        "ip": "10.0.0.10",
+                        "port": 22,
+                        "credentials": { "Agent": null },
+                        "tags": []
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let srv_json: Value = serde_json::from_slice(
+        &srv_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let server_id = srv_json["id"].as_str().unwrap();
+
+    // Activate
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/health", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 1. GET /api/v1/servers/{id}/metrics
+    let metrics_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/servers/{}/metrics", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(metrics_res.status(), StatusCode::OK);
+    let metrics_json: Value = serde_json::from_slice(
+        &metrics_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert!(metrics_json["cpu_usage_pct"].as_f64().is_some());
+    assert!(metrics_json["ram_used_mb"].as_u64().is_some());
+
+    // 2. POST /api/v1/servers/{id}/services/{name}/action
+    let svc_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/services/caddy/action", server_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "action": "Restart"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(svc_res.status(), StatusCode::OK);
+    let svc_json: Value = serde_json::from_slice(
+        &svc_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(svc_json["status"], "Active");
+
+    // 3. POST /api/v1/servers/{id}/reboot
+    let reboot_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/reboot", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(reboot_res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_bioxus_api_drift_and_cancellation() {
+    let app = setup_test_app();
+
+    // Register and activate server
+    let srv_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/servers")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "bioxus-drift-srv",
+                        "ip": "10.0.0.11",
+                        "port": 22,
+                        "credentials": { "Agent": null },
+                        "tags": []
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let srv_json: Value = serde_json::from_slice(
+        &srv_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let server_id = srv_json["id"].as_str().unwrap();
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/health", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Register repo
+    let repo_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/repos")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "bioxus-configs",
+                        "url": "https://github.com/myorg/bioxus-configs.git",
+                        "target_ref": { "Branch": "main" },
+                        "kind": "RawConfig"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let repo_json: Value = serde_json::from_slice(
+        &repo_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let repo_id = repo_json["id"].as_str().unwrap();
+
+    // POST /api/v1/orchestrations/drift
+    let drift_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/orchestrations/drift")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "server_id": server_id,
+                        "repo_id": repo_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(drift_res.status(), StatusCode::OK);
+    let drift_json: Value = serde_json::from_slice(
+        &drift_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(drift_json["has_drift"], false);
+}
+

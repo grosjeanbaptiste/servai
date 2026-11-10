@@ -201,3 +201,163 @@ fn test_orchestration_job_step_failure() {
     assert_eq!(job.status(), ExecutionStatus::Failed);
     assert!(job.error_details().is_some());
 }
+
+#[test]
+fn test_server_concurrency_lock() {
+    let mut server = Server::new(
+        ServerId::new(),
+        ServerName::new("prod-app-01").unwrap(),
+        HostAddress::new("10.0.0.1", 22).unwrap(),
+        SshCredentials::Agent,
+        None,
+    );
+
+    let job_1 = JobId::new();
+    let job_2 = JobId::new();
+
+    assert!(!server.is_locked());
+    assert!(server.acquire_lock(job_1).is_ok());
+    assert!(server.is_locked());
+    assert_eq!(server.locked_by_job(), Some(job_1));
+
+    // Second lock attempt must fail with Conflict
+    let err = server.acquire_lock(job_2).unwrap_err();
+    assert!(matches!(err, DomainError::Conflict(_)));
+
+    // Release with wrong job id must fail
+    assert!(matches!(
+        server.release_lock(job_2),
+        Err(DomainError::Conflict(_))
+    ));
+
+    // Release with right job id succeeds
+    assert!(server.release_lock(job_1).is_ok());
+    assert!(!server.is_locked());
+}
+
+#[test]
+fn test_server_metrics_validation() {
+    use servai::domain::server::ServerMetrics;
+
+    let metrics = ServerMetrics::new(
+        42.5,   // CPU %
+        8192,   // RAM used MB
+        16384,  // RAM total MB
+        120.0,  // Disk used GB
+        500.0,  // Disk total GB
+        360000, // Uptime seconds
+        [0.45, 0.52, 0.60], // Load average
+    )
+    .expect("valid metrics");
+
+    assert_eq!(metrics.cpu_usage_pct, 42.5);
+    assert_eq!(metrics.ram_percentage(), 50.0);
+    assert_eq!(metrics.disk_percentage(), 24.0);
+
+    // Invalid CPU > 100%
+    assert!(matches!(
+        ServerMetrics::new(105.0, 100, 200, 10.0, 50.0, 1000, [0.1, 0.1, 0.1]),
+        Err(DomainError::ValidationError(_))
+    ));
+
+    // Invalid RAM used > total
+    assert!(matches!(
+        ServerMetrics::new(50.0, 300, 200, 10.0, 50.0, 1000, [0.1, 0.1, 0.1]),
+        Err(DomainError::ValidationError(_))
+    ));
+}
+
+#[test]
+fn test_service_action_and_status() {
+    use servai::domain::server::{ServiceAction, ServiceStatus};
+
+    assert_eq!(ServiceAction::Restart.as_systemd_command(), "restart");
+    assert_eq!(ServiceAction::Start.as_systemd_command(), "start");
+    assert_eq!(ServiceAction::Stop.as_systemd_command(), "stop");
+
+    assert!(ServiceStatus::Active.is_healthy());
+    assert!(!ServiceStatus::Failed.is_healthy());
+    assert!(!ServiceStatus::Inactive.is_healthy());
+}
+
+#[test]
+fn test_orchestration_job_cancellation() {
+    let job_id = JobId::new();
+    let steps = vec![
+        OrchestrationStep::new("step_1", "Download artifacts"),
+        OrchestrationStep::new("step_2", "Deploy services"),
+    ];
+
+    let mut job = OrchestrationJob::new(job_id, ServerId::new(), RepoId::new(), steps).unwrap();
+
+    // Cannot cancel pending job before starting (or cancels to Cancelled)
+    assert!(job.cancel("User aborted").is_ok());
+    assert_eq!(job.status(), ExecutionStatus::Cancelled);
+
+    // Cannot start a cancelled job
+    assert!(matches!(
+        job.start(),
+        Err(DomainError::InvalidStateTransition { .. })
+    ));
+}
+
+#[test]
+fn test_orchestration_job_with_rollback() {
+    use servai::domain::orchestration::RollbackPolicy;
+
+    let job_id = JobId::new();
+    let mut step1 = OrchestrationStep::new("setup_db", "Prepare database schema");
+    step1.rollback_command = Some("drop database servai_temp".to_string());
+
+    let mut step2 = OrchestrationStep::new("migrate_data", "Migrate users");
+    step2.rollback_command = Some("truncate table users".to_string());
+
+    let mut job = OrchestrationJob::new_with_policy(
+        job_id,
+        ServerId::new(),
+        RepoId::new(),
+        vec![step1, step2],
+        RollbackPolicy::RollbackOnFailure,
+    )
+    .unwrap();
+
+    job.start().unwrap();
+    job.record_step_success(0, "DB schema prepared").unwrap();
+
+    // Step 1 fails
+    job.record_step_failure(1, "Migration syntax error", "Column missing")
+        .unwrap();
+
+    assert_eq!(job.status(), ExecutionStatus::Failed);
+
+    // Rollback execution
+    let rollback_steps = job.compensating_rollback_steps();
+    assert_eq!(rollback_steps.len(), 1); // Only step 0 completed and needs rollback
+    assert_eq!(
+        rollback_steps[0].rollback_command.as_deref(),
+        Some("drop database servai_temp")
+    );
+
+    job.record_rollback_completed("Compensating rollback finished successfully")
+        .unwrap();
+    assert_eq!(job.status(), ExecutionStatus::RolledBack);
+}
+
+#[test]
+fn test_drift_detection_report() {
+    use servai::domain::repository::DriftReport;
+
+    let report = DriftReport::new(
+        vec!["/etc/nginx/nginx.conf".to_string()],
+        vec!["/etc/nginx/conf.d/unexpected.conf".to_string()],
+        vec![],
+    );
+
+    assert!(report.has_drift());
+    assert_eq!(report.modified_files.len(), 1);
+    assert_eq!(report.untracked_files.len(), 1);
+
+    let clean_report = DriftReport::new(vec![], vec![], vec![]);
+    assert!(!clean_report.has_drift());
+}
+

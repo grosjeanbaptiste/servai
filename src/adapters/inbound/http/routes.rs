@@ -6,11 +6,13 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::adapters::inbound::http::{
-    orchestration_handlers::{get_orchestration, trigger_orchestration},
+    orchestration_handlers::{
+        cancel_orchestration, detect_drift_handler, get_orchestration, trigger_orchestration,
+    },
     repo_handlers::{get_repo, list_repos, register_repo, sync_repo},
     server_handlers::{
-        execute_on_server, get_server, health_check_server, list_servers, register_server,
-        set_server_maintenance, AppState,
+        execute_on_server, get_server, get_server_metrics, health_check_server, list_servers,
+        manage_service, reboot_server, register_server, set_server_maintenance, AppState,
     },
 };
 use crate::ports::inbound::{
@@ -37,12 +39,18 @@ pub fn create_router(
 
     Router::new()
         .route("/api/v1/health", get(health_check))
-        // Server administration routes (for bioxus UI)
+        // Server administration routes (for Bioxus UI)
         .route("/api/v1/servers", post(register_server).get(list_servers))
         .route("/api/v1/servers/{id}", get(get_server))
         .route("/api/v1/servers/{id}/health", post(health_check_server))
         .route("/api/v1/servers/{id}/maintenance", post(set_server_maintenance))
         .route("/api/v1/servers/{id}/execute", post(execute_on_server))
+        .route("/api/v1/servers/{id}/metrics", get(get_server_metrics))
+        .route(
+            "/api/v1/servers/{id}/services/{service}/action",
+            post(manage_service),
+        )
+        .route("/api/v1/servers/{id}/reboot", post(reboot_server))
         // Repository management routes
         .route("/api/v1/repos", post(register_repo).get(list_repos))
         .route("/api/v1/repos/{id}", get(get_repo))
@@ -50,5 +58,7 @@ pub fn create_router(
         // Orchestration routes
         .route("/api/v1/orchestrations", post(trigger_orchestration))
         .route("/api/v1/orchestrations/{id}", get(get_orchestration))
+        .route("/api/v1/orchestrations/{id}/cancel", post(cancel_orchestration))
+        .route("/api/v1/orchestrations/drift", post(detect_drift_handler))
         .with_state(state)
 }

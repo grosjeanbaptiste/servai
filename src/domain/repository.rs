@@ -57,6 +57,33 @@ pub enum SyncStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriftReport {
+    pub modified_files: Vec<String>,
+    pub untracked_files: Vec<String>,
+    pub deleted_files: Vec<String>,
+}
+
+impl DriftReport {
+    pub fn new(
+        modified_files: Vec<String>,
+        untracked_files: Vec<String>,
+        deleted_files: Vec<String>,
+    ) -> Self {
+        Self {
+            modified_files,
+            untracked_files,
+            deleted_files,
+        }
+    }
+
+    pub fn has_drift(&self) -> bool {
+        !self.modified_files.is_empty()
+            || !self.untracked_files.is_empty()
+            || !self.deleted_files.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagedRepository {
     id: RepoId,
     name: String,

@@ -1,206 +1,27 @@
-use async_trait::async_trait;
+use std::sync::Arc;
 use servai::{
+    adapters::outbound::{
+        memory::{
+            job_store::InMemoryJobStore, repo_store::InMemoryRepoStore,
+            server_store::InMemoryServerStore,
+        },
+        mock::{MockGitProvider, MockServerExecutor},
+    },
     application::{
         orchestration_service::OrchestrationService,
         server_service::{RegisterServerCommand, ServerService},
     },
     domain::{
         errors::DomainError,
-        orchestration::{ExecutionStatus, JobId, OrchestrationJob, OrchestrationStep},
-        repository::{GitRef, ManagedRepository, RepoId, RepoKind, SyncStatus},
-        server::{Server, ServerId, ServerSpec, ServerStatus, SshCredentials},
+        orchestration::ExecutionStatus,
+        repository::{GitRef, RepoKind, SyncStatus},
+        server::{ServerStatus, SshCredentials},
     },
-    ports::{
-        inbound::{
-            repo_orchestrator::{RegisterRepoCommand, RepoOrchestratorPort},
-            server_admin::ServerAdminPort,
-        },
-        outbound::{
-            git_provider::GitProviderPort,
-            job_store::JobStorePort,
-            repo_store::RepoStorePort,
-            server_executor::{CommandResult, ServerExecutorPort},
-            server_store::ServerStorePort,
-        },
+    ports::inbound::{
+        repo_orchestrator::{RegisterRepoCommand, RepoOrchestratorPort},
+        server_admin::ServerAdminPort,
     },
 };
-use std::sync::{Arc, Mutex};
-
-// In-Memory Test Doubles for Outbound Ports
-#[derive(Default, Clone)]
-struct InMemoryServerStore {
-    servers: Arc<Mutex<Vec<Server>>>,
-}
-
-#[async_trait]
-impl ServerStorePort for InMemoryServerStore {
-    async fn save(&self, server: Server) -> Result<(), DomainError> {
-        let mut list = self.servers.lock().unwrap();
-        if let Some(pos) = list.iter().position(|s| s.id() == server.id()) {
-            list[pos] = server;
-        } else {
-            list.push(server);
-        }
-        Ok(())
-    }
-
-    async fn find_by_id(&self, id: &ServerId) -> Result<Option<Server>, DomainError> {
-        let list = self.servers.lock().unwrap();
-        Ok(list.iter().find(|s| s.id() == *id).cloned())
-    }
-
-    async fn list(&self) -> Result<Vec<Server>, DomainError> {
-        let list = self.servers.lock().unwrap();
-        Ok(list.clone())
-    }
-
-    async fn delete(&self, id: &ServerId) -> Result<(), DomainError> {
-        let mut list = self.servers.lock().unwrap();
-        list.retain(|s| s.id() != *id);
-        Ok(())
-    }
-}
-
-#[derive(Default, Clone)]
-struct InMemoryRepoStore {
-    repos: Arc<Mutex<Vec<ManagedRepository>>>,
-}
-
-#[async_trait]
-impl RepoStorePort for InMemoryRepoStore {
-    async fn save(&self, repo: ManagedRepository) -> Result<(), DomainError> {
-        let mut list = self.repos.lock().unwrap();
-        if let Some(pos) = list.iter().position(|r| r.id() == repo.id()) {
-            list[pos] = repo;
-        } else {
-            list.push(repo);
-        }
-        Ok(())
-    }
-
-    async fn find_by_id(&self, id: &RepoId) -> Result<Option<ManagedRepository>, DomainError> {
-        let list = self.repos.lock().unwrap();
-        Ok(list.iter().find(|r| r.id() == *id).cloned())
-    }
-
-    async fn list(&self) -> Result<Vec<ManagedRepository>, DomainError> {
-        let list = self.repos.lock().unwrap();
-        Ok(list.clone())
-    }
-}
-
-#[derive(Default, Clone)]
-struct InMemoryJobStore {
-    jobs: Arc<Mutex<Vec<OrchestrationJob>>>,
-}
-
-#[async_trait]
-impl JobStorePort for InMemoryJobStore {
-    async fn save(&self, job: OrchestrationJob) -> Result<(), DomainError> {
-        let mut list = self.jobs.lock().unwrap();
-        if let Some(pos) = list.iter().position(|j| j.id() == job.id()) {
-            list[pos] = job;
-        } else {
-            list.push(job);
-        }
-        Ok(())
-    }
-
-    async fn find_by_id(&self, id: &JobId) -> Result<Option<OrchestrationJob>, DomainError> {
-        let list = self.jobs.lock().unwrap();
-        Ok(list.iter().find(|j| j.id() == *id).cloned())
-    }
-
-    async fn list_by_server(&self, server_id: &ServerId) -> Result<Vec<OrchestrationJob>, DomainError> {
-        let list = self.jobs.lock().unwrap();
-        Ok(list.iter().filter(|j| j.server_id() == *server_id).cloned().collect())
-    }
-}
-
-#[derive(Clone)]
-struct MockServerExecutor {
-    should_fail_ping: bool,
-    command_output: String,
-    should_fail_command: bool,
-}
-
-impl Default for MockServerExecutor {
-    fn default() -> Self {
-        Self {
-            should_fail_ping: false,
-            command_output: "Success".to_string(),
-            should_fail_command: false,
-        }
-    }
-}
-
-#[async_trait]
-impl ServerExecutorPort for MockServerExecutor {
-    async fn ping(&self, _server: &Server) -> Result<bool, DomainError> {
-        if self.should_fail_ping {
-            Ok(false)
-        } else {
-            Ok(true)
-        }
-    }
-
-    async fn execute_command(&self, _server: &Server, _command: &str) -> Result<CommandResult, DomainError> {
-        if self.should_fail_command {
-            Err(DomainError::ExecutionFailed {
-                reason: "Command returned exit code 1".to_string(),
-                details: Some("Mock error output".to_string()),
-            })
-        } else {
-            Ok(CommandResult {
-                exit_code: 0,
-                stdout: self.command_output.clone(),
-                stderr: String::new(),
-            })
-        }
-    }
-
-    async fn inspect_system(&self, _server: &Server) -> Result<ServerSpec, DomainError> {
-        Ok(ServerSpec {
-            os: "Debian 12".to_string(),
-            arch: "aarch64".to_string(),
-            cpu_cores: 4,
-            ram_mb: 16384,
-        })
-    }
-}
-
-#[derive(Clone)]
-struct MockGitProvider {
-    commit_hash: String,
-    should_fail_sync: bool,
-}
-
-impl Default for MockGitProvider {
-    fn default() -> Self {
-        Self {
-            commit_hash: "abcdef1234567890".to_string(),
-            should_fail_sync: false,
-        }
-    }
-}
-
-#[async_trait]
-impl GitProviderPort for MockGitProvider {
-    async fn sync_repository(&self, _repo: &ManagedRepository) -> Result<String, DomainError> {
-        if self.should_fail_sync {
-            Err(DomainError::VcsError("Failed to clone/pull repository".to_string()))
-        } else {
-            Ok(self.commit_hash.clone())
-        }
-    }
-
-    async fn resolve_plan(&self, _repo: &ManagedRepository) -> Result<Vec<OrchestrationStep>, DomainError> {
-        Ok(vec![
-            OrchestrationStep::new("git_pull", "Pull latest changes"),
-            OrchestrationStep::new("deploy_service", "Apply configurations"),
-        ])
-    }
-}
 
 #[tokio::test]
 async fn test_server_service_registration_and_healthcheck() {
@@ -358,4 +179,179 @@ async fn test_orchestration_service_server_offline_rejected() {
         .unwrap_err();
 
     assert!(matches!(err, DomainError::Conflict(_)));
+}
+
+#[tokio::test]
+async fn test_server_service_manage_systemd_service() {
+    use servai::domain::server::{ServiceAction, ServiceStatus};
+
+    let store = Arc::new(InMemoryServerStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let service = ServerService::new(store.clone(), executor.clone());
+
+    let server = service
+        .register_server(RegisterServerCommand {
+            name: "web-01".to_string(),
+            ip: "10.0.0.1".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    service.health_check(&server.id()).await.unwrap();
+
+    let status = service
+        .manage_service(&server.id(), "nginx", ServiceAction::Restart)
+        .await
+        .unwrap();
+
+    assert_eq!(status, ServiceStatus::Active);
+}
+
+#[tokio::test]
+async fn test_server_service_collect_metrics() {
+    let store = Arc::new(InMemoryServerStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let service = ServerService::new(store.clone(), executor.clone());
+
+    let server = service
+        .register_server(RegisterServerCommand {
+            name: "metrics-node".to_string(),
+            ip: "10.0.0.2".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    service.health_check(&server.id()).await.unwrap();
+
+    let metrics = service.get_metrics(&server.id()).await.unwrap();
+    assert!(metrics.cpu_usage_pct >= 0.0);
+    assert!(metrics.ram_used_mb <= metrics.ram_total_mb);
+}
+
+#[tokio::test]
+async fn test_server_service_reboot() {
+    let store = Arc::new(InMemoryServerStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let service = ServerService::new(store.clone(), executor.clone());
+
+    let server = service
+        .register_server(RegisterServerCommand {
+            name: "reboot-node".to_string(),
+            ip: "10.0.0.3".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    service.health_check(&server.id()).await.unwrap();
+
+    service.reboot_server(&server.id()).await.unwrap();
+
+    let after_reboot = service.get_server(&server.id()).await.unwrap();
+    assert_eq!(after_reboot.status(), ServerStatus::Maintenance);
+}
+
+#[tokio::test]
+async fn test_orchestration_service_rollback_on_step_failure() {
+    use servai::domain::orchestration::RollbackPolicy;
+
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+    let orchestrator = OrchestrationService::new(
+        server_store.clone(),
+        repo_store.clone(),
+        job_store.clone(),
+        executor.clone(),
+        git.clone(),
+    );
+
+    let server = server_service
+        .register_server(RegisterServerCommand {
+            name: "app-srv".to_string(),
+            ip: "10.0.0.4".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    server_service.health_check(&server.id()).await.unwrap();
+
+    let repo = orchestrator
+        .register_repo(RegisterRepoCommand {
+            name: "app-repo".to_string(),
+            url: "https://github.com/org/app.git".to_string(),
+            target_ref: GitRef::Branch("main".to_string()),
+            kind: RepoKind::Playbook,
+        })
+        .await
+        .unwrap();
+
+    let job = orchestrator
+        .trigger_orchestration_with_options(
+            &server.id(),
+            &repo.id(),
+            RollbackPolicy::RollbackOnFailure,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(job.status(), ExecutionStatus::Succeeded);
+
+    // Verify server lock is freed after job finishes
+    let s = server_service.get_server(&server.id()).await.unwrap();
+    assert!(!s.is_locked());
+}
+
+#[tokio::test]
+async fn test_orchestration_service_drift_detection() {
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+    let orchestrator = OrchestrationService::new(
+        server_store.clone(),
+        repo_store.clone(),
+        job_store.clone(),
+        executor.clone(),
+        git.clone(),
+    );
+
+    let server = server_service
+        .register_server(RegisterServerCommand {
+            name: "drift-node".to_string(),
+            ip: "10.0.0.5".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    server_service.health_check(&server.id()).await.unwrap();
+
+    let repo = orchestrator
+        .register_repo(RegisterRepoCommand {
+            name: "drift-repo".to_string(),
+            url: "https://github.com/org/drift.git".to_string(),
+            target_ref: GitRef::Branch("main".to_string()),
+            kind: RepoKind::RawConfig,
+        })
+        .await
+        .unwrap();
+
+    let drift = orchestrator.detect_drift(&server.id(), &repo.id()).await.unwrap();
+    assert!(!drift.has_drift());
 }

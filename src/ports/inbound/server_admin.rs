@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{
     errors::DomainError,
-    server::{Server, ServerId, ServerStatus, SshCredentials},
+    server::{Server, ServerId, ServerMetrics, ServerStatus, ServiceAction, ServiceStatus, SshCredentials},
 };
 use crate::ports::outbound::server_executor::CommandResult;
 
@@ -24,4 +24,12 @@ pub trait ServerAdminPort: Send + Sync {
     async fn health_check(&self, id: &ServerId) -> Result<ServerStatus, DomainError>;
     async fn set_maintenance(&self, id: &ServerId, enable: bool) -> Result<Server, DomainError>;
     async fn execute_on_server(&self, id: &ServerId, command: &str) -> Result<CommandResult, DomainError>;
+    async fn manage_service(
+        &self,
+        id: &ServerId,
+        service: &str,
+        action: ServiceAction,
+    ) -> Result<ServiceStatus, DomainError>;
+    async fn get_metrics(&self, id: &ServerId) -> Result<ServerMetrics, DomainError>;
+    async fn reboot_server(&self, id: &ServerId) -> Result<(), DomainError>;
 }

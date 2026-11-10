@@ -8,7 +8,9 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::adapters::inbound::http::error_response::ApiError;
-use crate::domain::server::{Server, ServerId, ServerStatus, SshCredentials};
+use crate::domain::server::{
+    Server, ServerId, ServerMetrics, ServerStatus, ServiceAction, ServiceStatus, SshCredentials,
+};
 use crate::ports::inbound::server_admin::{RegisterServerCommand, ServerAdminPort};
 use crate::ports::outbound::server_executor::CommandResult;
 
@@ -35,6 +37,17 @@ pub struct MaintenanceRequest {
 #[derive(Debug, Deserialize)]
 pub struct ExecuteCommandRequest {
     pub command: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceActionRequest {
+    pub action: ServiceAction,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ServiceResponse {
+    pub service: String,
+    pub status: ServiceStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,4 +122,38 @@ pub async fn execute_on_server(
         .execute_on_server(&ServerId::from_uuid(id), &payload.command)
         .await?;
     Ok(Json(result))
+}
+
+pub async fn get_server_metrics(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ServerMetrics>, ApiError> {
+    let metrics = state
+        .server_service
+        .get_metrics(&ServerId::from_uuid(id))
+        .await?;
+    Ok(Json(metrics))
+}
+
+pub async fn manage_service(
+    State(state): State<AppState>,
+    Path((id, service)): Path<(Uuid, String)>,
+    Json(payload): Json<ServiceActionRequest>,
+) -> Result<Json<ServiceResponse>, ApiError> {
+    let status = state
+        .server_service
+        .manage_service(&ServerId::from_uuid(id), &service, payload.action)
+        .await?;
+    Ok(Json(ServiceResponse { service, status }))
+}
+
+pub async fn reboot_server(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .server_service
+        .reboot_server(&ServerId::from_uuid(id))
+        .await?;
+    Ok(StatusCode::OK)
 }

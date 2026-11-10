@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use crate::domain::{
     errors::DomainError,
     orchestration::OrchestrationStep,
-    repository::ManagedRepository,
-    server::{Server, ServerSpec},
+    repository::{DriftReport, ManagedRepository},
+    server::{Server, ServerId, ServerMetrics, ServerSpec, ServiceAction, ServiceStatus},
 };
 use crate::ports::outbound::{
     git_provider::GitProviderPort,
@@ -60,6 +60,23 @@ impl ServerExecutorPort for MockServerExecutor {
             ram_mb: 16384,
         })
     }
+
+    async fn manage_system_service(
+        &self,
+        _server: &Server,
+        _service: &str,
+        _action: ServiceAction,
+    ) -> Result<ServiceStatus, DomainError> {
+        Ok(ServiceStatus::Active)
+    }
+
+    async fn collect_metrics(&self, _server: &Server) -> Result<ServerMetrics, DomainError> {
+        ServerMetrics::new(25.0, 4096, 16384, 50.0, 200.0, 72000, [0.2, 0.3, 0.4])
+    }
+
+    async fn reboot(&self, _server: &Server) -> Result<(), DomainError> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -92,5 +109,13 @@ impl GitProviderPort for MockGitProvider {
             OrchestrationStep::new("git_pull", "Pull latest changes"),
             OrchestrationStep::new("deploy_service", "Apply configurations"),
         ])
+    }
+
+    async fn detect_drift(
+        &self,
+        _server_id: &ServerId,
+        _repo: &ManagedRepository,
+    ) -> Result<DriftReport, DomainError> {
+        Ok(DriftReport::new(vec![], vec![], vec![]))
     }
 }

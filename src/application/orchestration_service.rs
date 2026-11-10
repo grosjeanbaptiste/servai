@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use crate::domain::{
     errors::DomainError,
-    orchestration::{JobId, OrchestrationJob},
-    repository::{ManagedRepository, RepoId, SyncStatus},
+    orchestration::{JobId, OrchestrationJob, RollbackPolicy},
+    repository::{DriftReport, ManagedRepository, RepoId, SyncStatus},
     server::{ServerId, ServerStatus},
 };
 use crate::ports::{
@@ -97,7 +97,17 @@ impl RepoOrchestratorPort for OrchestrationService {
         server_id: &ServerId,
         repo_id: &RepoId,
     ) -> Result<OrchestrationJob, DomainError> {
-        let server = self
+        self.trigger_orchestration_with_options(server_id, repo_id, RollbackPolicy::Halt)
+            .await
+    }
+
+    async fn trigger_orchestration_with_options(
+        &self,
+        server_id: &ServerId,
+        repo_id: &RepoId,
+        rollback_policy: RollbackPolicy,
+    ) -> Result<OrchestrationJob, DomainError> {
+        let mut server = self
             .server_store
             .find_by_id(server_id)
             .await?
@@ -117,12 +127,25 @@ impl RepoOrchestratorPort for OrchestrationService {
         let repo = self.get_repo(repo_id).await?;
         let steps = self.git_provider.resolve_plan(&repo).await?;
 
-        let mut job = OrchestrationJob::new(JobId::new(), *server_id, *repo_id, steps)?;
+        let mut job = OrchestrationJob::new_with_policy(
+            JobId::new(),
+            *server_id,
+            *repo_id,
+            steps,
+            rollback_policy,
+        )?;
+
+        // Acquire server concurrency lock
+        server.acquire_lock(job.id())?;
+        self.server_store.save(server.clone()).await?;
+
         job.start()?;
         self.job_store.save(job.clone()).await?;
 
         // Execute steps sequentially
         let step_count = job.steps().len();
+        let mut step_failed = false;
+
         for i in 0..step_count {
             let step_name = job.steps()[i].step.name.clone();
             let cmd_to_run = format!("servai-run-step:{}", step_name);
@@ -137,14 +160,33 @@ impl RepoOrchestratorPort for OrchestrationService {
                             format!("Step failed with exit code {}", res.exit_code),
                             res.stderr,
                         )?;
+                        step_failed = true;
                         break;
                     }
                 }
                 Err(err) => {
                     job.record_step_failure(i, "Step execution error", err.to_string())?;
+                    step_failed = true;
                     break;
                 }
             }
+        }
+
+        // Check if rollback needed
+        if step_failed && rollback_policy == RollbackPolicy::RollbackOnFailure {
+            let rollback_steps = job.compensating_rollback_steps();
+            for rb_step in rollback_steps {
+                if let Some(rb_cmd) = rb_step.rollback_command {
+                    let _ = self.executor.execute_command(&server, &rb_cmd).await;
+                }
+            }
+            job.record_rollback_completed("Compensating rollback finished")?;
+        }
+
+        // Release server lock
+        if let Ok(Some(mut fresh_server)) = self.server_store.find_by_id(server_id).await {
+            let _ = fresh_server.release_lock(job.id());
+            let _ = self.server_store.save(fresh_server).await;
         }
 
         self.job_store.save(job.clone()).await?;
@@ -159,5 +201,35 @@ impl RepoOrchestratorPort for OrchestrationService {
                 entity: "OrchestrationJob",
                 id: id.to_string(),
             })
+    }
+
+    async fn cancel_job(&self, id: &JobId, reason: &str) -> Result<OrchestrationJob, DomainError> {
+        let mut job = self.get_job(id).await?;
+        job.cancel(reason)?;
+
+        // Ensure server lock is released on cancel
+        if let Ok(Some(mut server)) = self.server_store.find_by_id(&job.server_id()).await {
+            let _ = server.release_lock(job.id());
+            let _ = self.server_store.save(server).await;
+        }
+
+        self.job_store.save(job.clone()).await?;
+        Ok(job)
+    }
+
+    async fn detect_drift(
+        &self,
+        server_id: &ServerId,
+        repo_id: &RepoId,
+    ) -> Result<DriftReport, DomainError> {
+        let _server = self.server_store.find_by_id(server_id).await?.ok_or_else(|| {
+            DomainError::NotFound {
+                entity: "Server",
+                id: server_id.to_string(),
+            }
+        })?;
+        let repo = self.get_repo(repo_id).await?;
+
+        self.git_provider.detect_drift(server_id, &repo).await
     }
 }

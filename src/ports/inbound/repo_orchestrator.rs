@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{
     errors::DomainError,
-    orchestration::{JobId, OrchestrationJob},
-    repository::{GitRef, ManagedRepository, RepoId, RepoKind},
+    orchestration::{JobId, OrchestrationJob, RollbackPolicy},
+    repository::{DriftReport, GitRef, ManagedRepository, RepoId, RepoKind},
     server::ServerId,
 };
 
@@ -27,5 +27,17 @@ pub trait RepoOrchestratorPort: Send + Sync {
         server_id: &ServerId,
         repo_id: &RepoId,
     ) -> Result<OrchestrationJob, DomainError>;
+    async fn trigger_orchestration_with_options(
+        &self,
+        server_id: &ServerId,
+        repo_id: &RepoId,
+        rollback_policy: RollbackPolicy,
+    ) -> Result<OrchestrationJob, DomainError>;
     async fn get_job(&self, id: &JobId) -> Result<OrchestrationJob, DomainError>;
+    async fn cancel_job(&self, id: &JobId, reason: &str) -> Result<OrchestrationJob, DomainError>;
+    async fn detect_drift(
+        &self,
+        server_id: &ServerId,
+        repo_id: &RepoId,
+    ) -> Result<DriftReport, DomainError>;
 }

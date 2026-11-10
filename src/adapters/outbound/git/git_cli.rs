@@ -5,7 +5,8 @@ use tokio::process::Command;
 use crate::domain::{
     errors::DomainError,
     orchestration::OrchestrationStep,
-    repository::{GitRef, ManagedRepository, RepoKind},
+    repository::{DriftReport, GitRef, ManagedRepository, RepoKind},
+    server::ServerId,
 };
 use crate::ports::outbound::git_provider::GitProviderPort;
 
@@ -122,5 +123,41 @@ impl GitProviderPort for GitCliProvider {
                 OrchestrationStep::new("reload_services", "systemctl reload-or-restart servai-services"),
             ]),
         }
+    }
+
+    async fn detect_drift(
+        &self,
+        _server_id: &ServerId,
+        repo: &ManagedRepository,
+    ) -> Result<DriftReport, DomainError> {
+        let repo_path = self.work_dir.join(repo.id().to_string());
+        if !repo_path.exists() {
+            return Ok(DriftReport::new(vec![], vec![], vec![]));
+        }
+
+        let output = Command::new("git")
+            .current_dir(&repo_path)
+            .arg("status")
+            .arg("--porcelain")
+            .output()
+            .await
+            .map_err(|e| DomainError::VcsError(format!("Failed to run git status: {}", e)))?;
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut modified = Vec::new();
+        let mut untracked = Vec::new();
+        let mut deleted = Vec::new();
+
+        for line in text.lines() {
+            if line.starts_with(" M") || line.starts_with("M ") {
+                modified.push(line[3..].trim().to_string());
+            } else if line.starts_with("??") {
+                untracked.push(line[3..].trim().to_string());
+            } else if line.starts_with(" D") || line.starts_with("D ") {
+                deleted.push(line[3..].trim().to_string());
+            }
+        }
+
+        Ok(DriftReport::new(modified, untracked, deleted))
     }
 }

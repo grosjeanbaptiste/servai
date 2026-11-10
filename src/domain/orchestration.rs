@@ -44,12 +44,21 @@ pub enum ExecutionStatus {
     Succeeded,
     Failed,
     Cancelled,
+    RolledBack,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RollbackPolicy {
+    RollbackOnFailure,
+    ContinueOnFailure,
+    Halt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrchestrationStep {
     pub name: String,
     pub description: String,
+    pub rollback_command: Option<String>,
 }
 
 impl OrchestrationStep {
@@ -57,6 +66,7 @@ impl OrchestrationStep {
         Self {
             name: name.into(),
             description: description.into(),
+            rollback_command: None,
         }
     }
 }
@@ -76,8 +86,10 @@ pub struct OrchestrationJob {
     repo_id: RepoId,
     steps: Vec<StepExecution>,
     status: ExecutionStatus,
+    rollback_policy: RollbackPolicy,
     current_step_index: usize,
     error_details: Option<String>,
+    rollback_details: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -88,6 +100,16 @@ impl OrchestrationJob {
         server_id: ServerId,
         repo_id: RepoId,
         steps: Vec<OrchestrationStep>,
+    ) -> Result<Self, DomainError> {
+        Self::new_with_policy(id, server_id, repo_id, steps, RollbackPolicy::Halt)
+    }
+
+    pub fn new_with_policy(
+        id: JobId,
+        server_id: ServerId,
+        repo_id: RepoId,
+        steps: Vec<OrchestrationStep>,
+        rollback_policy: RollbackPolicy,
     ) -> Result<Self, DomainError> {
         if steps.is_empty() {
             return Err(DomainError::ValidationError(
@@ -112,8 +134,10 @@ impl OrchestrationJob {
             repo_id,
             steps: step_executions,
             status: ExecutionStatus::Pending,
+            rollback_policy,
             current_step_index: 0,
             error_details: None,
+            rollback_details: None,
             created_at: now,
             updated_at: now,
         })
@@ -133,6 +157,10 @@ impl OrchestrationJob {
 
     pub fn status(&self) -> ExecutionStatus {
         self.status
+    }
+
+    pub fn rollback_policy(&self) -> RollbackPolicy {
+        self.rollback_policy
     }
 
     pub fn current_step_index(&self) -> usize {
@@ -159,6 +187,24 @@ impl OrchestrationJob {
         if let Some(first_step) = self.steps.get_mut(0) {
             first_step.status = ExecutionStatus::Running;
         }
+        Ok(())
+    }
+
+    pub fn cancel(&mut self, reason: impl Into<String>) -> Result<(), DomainError> {
+        if self.status == ExecutionStatus::Succeeded
+            || self.status == ExecutionStatus::Failed
+            || self.status == ExecutionStatus::RolledBack
+        {
+            return Err(DomainError::Conflict(format!(
+                "Cannot cancel a job in terminal status {:?}",
+                self.status
+            )));
+        }
+
+        let r = reason.into();
+        self.status = ExecutionStatus::Cancelled;
+        self.error_details = Some(format!("Job cancelled: {}", r));
+        self.updated_at = Utc::now();
         Ok(())
     }
 
@@ -222,6 +268,30 @@ impl OrchestrationJob {
         self.status = ExecutionStatus::Failed;
         self.updated_at = Utc::now();
 
+        Ok(())
+    }
+
+    pub fn compensating_rollback_steps(&self) -> Vec<OrchestrationStep> {
+        // Collect succeeded steps in reverse order that have rollback commands
+        self.steps
+            .iter()
+            .take(self.current_step_index)
+            .filter(|s| s.status == ExecutionStatus::Succeeded && s.step.rollback_command.is_some())
+            .map(|s| s.step.clone())
+            .rev()
+            .collect()
+    }
+
+    pub fn record_rollback_completed(&mut self, details: impl Into<String>) -> Result<(), DomainError> {
+        if self.status != ExecutionStatus::Failed {
+            return Err(DomainError::InvalidStateTransition {
+                from: format!("{:?}", self.status),
+                to: "RolledBack".to_string(),
+            });
+        }
+        self.status = ExecutionStatus::RolledBack;
+        self.rollback_details = Some(details.into());
+        self.updated_at = Utc::now();
         Ok(())
     }
 }
