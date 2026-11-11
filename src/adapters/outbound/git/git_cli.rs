@@ -127,6 +127,10 @@ impl GitProviderPort for GitCliProvider {
                 OrchestrationStep::new("opentofu_plan", "tofu plan -no-color"),
                 OrchestrationStep::new("opentofu_apply", "tofu apply -auto-approve -no-color"),
             ]),
+            RepoKind::Crossplane => Ok(vec![
+                OrchestrationStep::new("crossplane_render", "crossplane beta render claim.yaml composition.yaml"),
+                OrchestrationStep::new("crossplane_apply", "kubectl apply -f claim.yaml"),
+            ]),
         }
     }
 

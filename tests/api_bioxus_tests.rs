@@ -1249,6 +1249,127 @@ async fn test_bioxus_api_opentofu_and_ansible_engine_endpoints() {
     assert_eq!(facts_json["memtotal_mb"], 8192);
 }
 
+#[tokio::test]
+async fn test_bioxus_api_crossplane_endpoints() {
+    let app = setup_test_app();
+
+    // 1. POST /api/v1/crossplane/claims
+    let create_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/crossplane/claims")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "api_version": "database.servai.io/v1alpha1",
+                        "kind": "PostgreSQLInstance",
+                        "name": "bioxus-prod-db",
+                        "namespace": "production",
+                        "composition_ref": "postgres-ha",
+                        "parameters": {
+                            "size": "db.m6i.large",
+                            "storage": "100Gi"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(create_res.status(), StatusCode::CREATED);
+    let create_json: Value = serde_json::from_slice(
+        &create_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(create_json["name"], "bioxus-prod-db");
+    assert_eq!(create_json["kind"], "PostgreSQLInstance");
+    assert_eq!(create_json["ready"], true);
+    assert_eq!(create_json["synced"], true);
+    assert_eq!(create_json["managed_resources"].as_array().unwrap().len(), 2);
+
+    // 2. GET /api/v1/crossplane/claims/:namespace/:name
+    let get_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/crossplane/claims/production/bioxus-prod-db")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(get_res.status(), StatusCode::OK);
+    let get_json: Value = serde_json::from_slice(
+        &get_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(get_json["name"], "bioxus-prod-db");
+    assert_eq!(get_json["ready"], true);
+
+    // 3. DELETE /api/v1/crossplane/claims/:namespace/:name
+    let del_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/crossplane/claims/production/bioxus-prod-db")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(del_res.status(), StatusCode::NO_CONTENT);
+
+    // 4. GET /api/v1/crossplane/resources
+    let res_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/crossplane/resources?namespace=production")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res_res.status(), StatusCode::OK);
+    let res_json: Value = serde_json::from_slice(
+        &res_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(res_json.as_array().unwrap().len(), 2);
+    assert_eq!(res_json[0]["provider"], "provider-aws");
+
+    // 5. GET /api/v1/crossplane/providers
+    let prov_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/crossplane/providers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(prov_res.status(), StatusCode::OK);
+    let prov_json: Value = serde_json::from_slice(
+        &prov_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(prov_json.as_array().unwrap().len(), 3);
+    assert_eq!(prov_json[0]["name"], "provider-aws");
+}
+
 
 
 

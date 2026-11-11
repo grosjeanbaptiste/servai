@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::adapters::outbound::{
     ansible::MockAnsibleEngine,
     catalog::StandardServerAdminCatalog,
+    crossplane::MockCrossplaneEngine,
     memory::stack_store::InMemoryStackStore,
     opentofu::MockOpenTofuEngine,
     registry::MultiSourceAdminRegistry,
@@ -13,6 +14,10 @@ use crate::domain::{
     catalog::{AdminCategory, CatalogItem},
     engines::{
         ansible::AnsibleRunResult,
+        crossplane::{
+            CrossplaneClaim, CrossplaneProviderStatus, CrossplaneReconcileResult,
+            CrossplaneResource,
+        },
         opentofu::{TofuApplyResult, TofuPlanResult, TofuState},
     },
     errors::DomainError,
@@ -27,6 +32,7 @@ use crate::ports::{
     outbound::{
         admin_registry::AdminRegistryPort,
         ansible_engine::AnsibleEnginePort,
+        crossplane_engine::CrossplaneEnginePort,
         git_provider::GitProviderPort,
         job_store::JobStorePort,
         opentofu_engine::OpenTofuEnginePort,
@@ -49,6 +55,7 @@ pub struct OrchestrationService {
     registry: Arc<dyn AdminRegistryPort>,
     tofu_engine: Arc<dyn OpenTofuEnginePort>,
     ansible_engine: Arc<dyn AnsibleEnginePort>,
+    crossplane_engine: Arc<dyn CrossplaneEnginePort>,
 }
 
 impl OrchestrationService {
@@ -112,6 +119,7 @@ impl OrchestrationService {
             registry,
             Arc::new(MockOpenTofuEngine::default()),
             Arc::new(MockAnsibleEngine::default()),
+            Arc::new(MockCrossplaneEngine::default()),
         )
     }
 
@@ -126,6 +134,7 @@ impl OrchestrationService {
         registry: Arc<dyn AdminRegistryPort>,
         tofu_engine: Arc<dyn OpenTofuEnginePort>,
         ansible_engine: Arc<dyn AnsibleEnginePort>,
+        crossplane_engine: Arc<dyn CrossplaneEnginePort>,
     ) -> Self {
         Self {
             server_store,
@@ -138,6 +147,7 @@ impl OrchestrationService {
             registry,
             tofu_engine,
             ansible_engine,
+            crossplane_engine,
         }
     }
 
@@ -148,6 +158,11 @@ impl OrchestrationService {
 
     pub fn with_ansible_engine(mut self, engine: Arc<dyn AnsibleEnginePort>) -> Self {
         self.ansible_engine = engine;
+        self
+    }
+
+    pub fn with_crossplane_engine(mut self, engine: Arc<dyn CrossplaneEnginePort>) -> Self {
+        self.crossplane_engine = engine;
         self
     }
 }
@@ -733,5 +748,43 @@ impl RepoOrchestratorPort for OrchestrationService {
             )));
         }
         self.ansible_engine.run_playbook(&server, playbook, vars).await
+    }
+
+    async fn apply_crossplane_claim(
+        &self,
+        claim: CrossplaneClaim,
+    ) -> Result<CrossplaneReconcileResult, DomainError> {
+        self.crossplane_engine.apply_claim(&claim).await
+    }
+
+    async fn get_crossplane_claim_status(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<CrossplaneReconcileResult, DomainError> {
+        self.crossplane_engine.get_claim_status(namespace, name).await
+    }
+
+    async fn delete_crossplane_claim(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<(), DomainError> {
+        self.crossplane_engine.delete_claim(namespace, name).await
+    }
+
+    async fn list_crossplane_resources(
+        &self,
+        namespace: Option<String>,
+    ) -> Result<Vec<CrossplaneResource>, DomainError> {
+        self.crossplane_engine
+            .list_managed_resources(namespace.as_deref())
+            .await
+    }
+
+    async fn list_crossplane_providers(
+        &self,
+    ) -> Result<Vec<CrossplaneProviderStatus>, DomainError> {
+        self.crossplane_engine.list_providers().await
     }
 }

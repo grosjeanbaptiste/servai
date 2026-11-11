@@ -6,6 +6,10 @@ use crate::domain::{
     catalog::{AdminCategory, CatalogItem},
     engines::{
         ansible::AnsibleRunResult,
+        crossplane::{
+            CrossplaneClaim, CrossplaneProviderStatus, CrossplaneReconcileResult,
+            CrossplaneResource,
+        },
         opentofu::{TofuApplyResult, TofuPlanResult, TofuState},
     },
     errors::DomainError,
@@ -124,4 +128,27 @@ pub trait RepoOrchestratorPort: Send + Sync {
         playbook: &str,
         vars: HashMap<String, String>,
     ) -> Result<AnsibleRunResult, DomainError>;
+
+    // Crossplane Control Plane orchestration
+    async fn apply_crossplane_claim(
+        &self,
+        claim: CrossplaneClaim,
+    ) -> Result<CrossplaneReconcileResult, DomainError>;
+    async fn get_crossplane_claim_status(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<CrossplaneReconcileResult, DomainError>;
+    async fn delete_crossplane_claim(
+        &self,
+        namespace: &str,
+        name: &str,
+    ) -> Result<(), DomainError>;
+    async fn list_crossplane_resources(
+        &self,
+        namespace: Option<String>,
+    ) -> Result<Vec<CrossplaneResource>, DomainError>;
+    async fn list_crossplane_providers(
+        &self,
+    ) -> Result<Vec<CrossplaneProviderStatus>, DomainError>;
 }

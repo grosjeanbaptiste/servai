@@ -1,5 +1,6 @@
 pub mod ansible;
 pub mod catalog;
+pub mod crossplane;
 pub mod git;
 pub mod memory;
 pub mod mock;

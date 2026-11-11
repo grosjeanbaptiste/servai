@@ -31,6 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let git_provider = Arc::new(GitCliProvider::default());
     let tofu_engine = Arc::new(servai::adapters::outbound::opentofu::CliOpenTofuAdapter::default());
     let ansible_engine = Arc::new(servai::adapters::outbound::ansible::CliAnsibleAdapter::default());
+    let crossplane_engine = Arc::new(servai::adapters::outbound::crossplane::CliCrossplaneAdapter::default());
 
     let server_service = Arc::new(ServerService::new_with_ansible(
         server_store.clone(),
@@ -46,7 +47,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             git_provider,
         )
         .with_tofu_engine(tofu_engine)
-        .with_ansible_engine(ansible_engine),
+        .with_ansible_engine(ansible_engine)
+        .with_crossplane_engine(crossplane_engine),
     );
 
     let router = create_router(server_service, orchestrator_service)

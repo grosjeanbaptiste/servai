@@ -1,5 +1,6 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
+    http::StatusCode,
     Json,
 };
 use serde::Deserialize;
@@ -10,6 +11,10 @@ use crate::adapters::inbound::http::{error_response::ApiError, server_handlers::
 use crate::domain::{
     engines::{
         ansible::{AnsibleFacts, AnsibleModuleResult, AnsibleRunResult},
+        crossplane::{
+            CrossplaneClaim, CrossplaneProviderStatus, CrossplaneReconcileResult,
+            CrossplaneResource,
+        },
         opentofu::{TofuApplyResult, TofuPlanResult, TofuState},
     },
     repository::RepoId,
@@ -118,4 +123,78 @@ pub async fn gather_ansible_facts_handler(
     let id = ServerId::from_uuid(server_id);
     let facts = state.server_service.gather_ansible_facts(&id).await?;
     Ok(Json(facts))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CrossplaneClaimRequest {
+    pub api_version: String,
+    pub kind: String,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub composition_ref: Option<String>,
+    pub parameters: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NamespaceQuery {
+    pub namespace: Option<String>,
+}
+
+pub async fn apply_crossplane_claim_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<CrossplaneClaimRequest>,
+) -> Result<(StatusCode, Json<CrossplaneReconcileResult>), ApiError> {
+    let claim = CrossplaneClaim::new(
+        payload.api_version,
+        payload.kind,
+        payload.name,
+        payload.namespace.unwrap_or_else(|| "default".to_string()),
+        payload.composition_ref,
+        payload.parameters.unwrap_or_default(),
+    )?;
+    let result = state.orchestrator_service.apply_crossplane_claim(claim).await?;
+    Ok((StatusCode::CREATED, Json(result)))
+}
+
+pub async fn get_crossplane_claim_handler(
+    State(state): State<AppState>,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<Json<CrossplaneReconcileResult>, ApiError> {
+    let result = state
+        .orchestrator_service
+        .get_crossplane_claim_status(&namespace, &name)
+        .await?;
+    Ok(Json(result))
+}
+
+pub async fn delete_crossplane_claim_handler(
+    State(state): State<AppState>,
+    Path((namespace, name)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .orchestrator_service
+        .delete_crossplane_claim(&namespace, &name)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_crossplane_resources_handler(
+    State(state): State<AppState>,
+    Query(query): Query<NamespaceQuery>,
+) -> Result<Json<Vec<CrossplaneResource>>, ApiError> {
+    let resources = state
+        .orchestrator_service
+        .list_crossplane_resources(query.namespace)
+        .await?;
+    Ok(Json(resources))
+}
+
+pub async fn list_crossplane_providers_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<CrossplaneProviderStatus>>, ApiError> {
+    let providers = state
+        .orchestrator_service
+        .list_crossplane_providers()
+        .await?;
+    Ok(Json(providers))
 }

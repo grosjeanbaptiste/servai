@@ -8,8 +8,10 @@ use std::sync::Arc;
 use crate::adapters::inbound::http::{
     catalog_handlers::{apply_recipe, import_catalog_item, list_catalog},
     engine_handlers::{
-        apply_tofu_handler, destroy_tofu_handler, gather_ansible_facts_handler,
-        get_tofu_state_handler, plan_tofu_handler, run_ansible_module_handler,
+        apply_crossplane_claim_handler, apply_tofu_handler, delete_crossplane_claim_handler,
+        destroy_tofu_handler, gather_ansible_facts_handler, get_crossplane_claim_handler,
+        get_tofu_state_handler, list_crossplane_providers_handler,
+        list_crossplane_resources_handler, plan_tofu_handler, run_ansible_module_handler,
         run_ansible_playbook_handler,
     },
     orchestration_handlers::{
@@ -111,6 +113,20 @@ pub fn create_router(
         .route(
             "/api/v1/servers/{id}/ansible/facts",
             get(gather_ansible_facts_handler),
+        )
+        // Crossplane Control Plane orchestration routes (for Bioxus)
+        .route("/api/v1/crossplane/claims", post(apply_crossplane_claim_handler))
+        .route(
+            "/api/v1/crossplane/claims/{namespace}/{name}",
+            get(get_crossplane_claim_handler).delete(delete_crossplane_claim_handler),
+        )
+        .route(
+            "/api/v1/crossplane/resources",
+            get(list_crossplane_resources_handler),
+        )
+        .route(
+            "/api/v1/crossplane/providers",
+            get(list_crossplane_providers_handler),
         )
         .with_state(state)
 }

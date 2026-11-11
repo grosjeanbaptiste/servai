@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use servai::domain::engines::{
     ansible::{AnsibleFacts, AnsibleModuleResult, AnsibleRunResult, AnsibleTaskEvent},
+    crossplane::{
+        CrossplaneClaim, CrossplaneCondition, CrossplaneReconcileResult, CrossplaneResource,
+    },
     opentofu::{TofuApplyResult, TofuPlanResult, TofuPlanSummary, TofuState},
 };
 
@@ -92,3 +95,76 @@ fn test_ansible_facts_parsing_and_module_execution() {
     assert!(module_res.is_success());
     assert!(module_res.changed);
 }
+
+#[test]
+fn test_crossplane_claim_and_condition_validation() {
+    let mut params = HashMap::new();
+    params.insert("nodePoolSize".to_string(), "3".to_string());
+    params.insert("region".to_string(), "eu-west-1".to_string());
+
+    let claim = CrossplaneClaim::new(
+        "database.servai.io/v1alpha1",
+        "PostgreSQLInstance",
+        "production-db",
+        "default",
+        Some("postgres-ha-composition".to_string()),
+        params,
+    )
+    .unwrap();
+
+    assert_eq!(claim.api_version(), "database.servai.io/v1alpha1");
+    assert_eq!(claim.kind(), "PostgreSQLInstance");
+    assert_eq!(claim.name(), "production-db");
+    assert_eq!(claim.namespace(), "default");
+    assert_eq!(claim.composition_ref(), Some("postgres-ha-composition"));
+
+    // Validation edge case: empty name
+    let invalid = CrossplaneClaim::new(
+        "database.servai.io/v1alpha1",
+        "PostgreSQLInstance",
+        "",
+        "default",
+        None,
+        HashMap::new(),
+    );
+    assert!(invalid.is_err());
+}
+
+#[test]
+fn test_crossplane_reconcile_result_and_managed_resources() {
+    let conditions = vec![
+        CrossplaneCondition::new("Synced", "True", "ReconcileSuccess", "Resource synced successfully"),
+        CrossplaneCondition::new("Ready", "True", "Available", "Composite resource is ready"),
+    ];
+
+    let managed = vec![
+        CrossplaneResource::new("Instance", "postgres-m6i", "default", true, true, "provider-aws"),
+        CrossplaneResource::new("SubnetGroup", "postgres-subnets", "default", true, true, "provider-aws"),
+    ];
+
+    let result = CrossplaneReconcileResult::new(
+        "production-db",
+        "PostgreSQLInstance",
+        true,
+        true,
+        conditions,
+        managed,
+    );
+
+    assert!(result.is_ready());
+    assert!(result.is_synced());
+    assert_eq!(result.managed_resources().len(), 2);
+    assert_eq!(result.managed_resources()[0].provider, "provider-aws");
+
+    let degraded = CrossplaneReconcileResult::new(
+        "broken-cluster",
+        "KubernetesCluster",
+        false,
+        true,
+        vec![CrossplaneCondition::new("Ready", "False", "CreatingNodePool", "Nodes provisioning")],
+        vec![],
+    );
+    assert!(!degraded.is_ready());
+    assert!(degraded.is_synced());
+}
+

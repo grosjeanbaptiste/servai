@@ -802,6 +802,84 @@ async fn test_server_service_ansible_module_and_facts() {
     assert!(facts.interfaces.contains(&"eth0".to_string()));
 }
 
+#[tokio::test]
+async fn test_orchestration_service_crossplane_claim_lifecycle() {
+    use servai::domain::engines::crossplane::CrossplaneClaim;
+
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let orchestrator = OrchestrationService::new(
+        server_store,
+        repo_store,
+        job_store,
+        executor,
+        git,
+    );
+
+    let mut params = HashMap::new();
+    params.insert("storageGb".to_string(), "50".to_string());
+
+    let claim = CrossplaneClaim::new(
+        "database.example.org/v1alpha1",
+        "PostgreSQLInstance",
+        "app-db",
+        "staging",
+        Some("postgres-composition".to_string()),
+        params,
+    )
+    .unwrap();
+
+    // 1. Apply claim
+    let result = orchestrator.apply_crossplane_claim(claim).await.unwrap();
+    assert!(result.is_ready());
+    assert!(result.is_synced());
+    assert_eq!(result.name(), "app-db");
+    assert_eq!(result.managed_resources().len(), 2);
+
+    // 2. Query claim status
+    let status = orchestrator.get_crossplane_claim_status("staging", "app-db").await.unwrap();
+    assert!(status.is_ready());
+    assert_eq!(status.name(), "app-db");
+
+    // 3. Delete claim
+    let delete_res = orchestrator.delete_crossplane_claim("staging", "app-db").await;
+    assert!(delete_res.is_ok());
+}
+
+#[tokio::test]
+async fn test_orchestration_service_crossplane_providers_and_resources() {
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let orchestrator = OrchestrationService::new(
+        server_store,
+        repo_store,
+        job_store,
+        executor,
+        git,
+    );
+
+    // List providers
+    let providers = orchestrator.list_crossplane_providers().await.unwrap();
+    assert_eq!(providers.len(), 3);
+    assert_eq!(providers[0].name, "provider-aws");
+    assert!(providers[0].installed && providers[0].healthy);
+
+    // List managed resources
+    let resources = orchestrator.list_crossplane_resources(Some("default".to_string())).await.unwrap();
+    assert_eq!(resources.len(), 2);
+    assert!(resources[0].ready && resources[0].synced);
+    assert_eq!(resources[0].provider, "provider-aws");
+}
+
+
 
 
 

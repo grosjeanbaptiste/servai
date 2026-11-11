@@ -46,6 +46,7 @@ pub enum RepoKind {
     ShellManifest,
     RawConfig,
     OpenTofu,
+    Crossplane,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +94,7 @@ pub enum DetectedAdminType {
     SystemdUnits,
     RawConfiguration,
     OpenTofuModule,
+    CrossplaneComposition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
