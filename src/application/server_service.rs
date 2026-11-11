@@ -2,9 +2,15 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 pub use crate::ports::inbound::server_admin::RegisterServerCommand;
-use crate::adapters::outbound::ansible::MockAnsibleEngine;
+use crate::adapters::outbound::{
+    ansible::MockAnsibleEngine,
+    wireguard::MockWireGuardEngine,
+};
 use crate::domain::{
-    engines::ansible::{AnsibleFacts, AnsibleModuleResult},
+    engines::{
+        ansible::{AnsibleFacts, AnsibleModuleResult},
+        wireguard::{WireGuardDeviceStatus, WireGuardInterface, WireGuardPeer},
+    },
     errors::DomainError,
     server::{HostAddress, Server, ServerId, ServerMetrics, ServerName, ServerStatus, ServiceAction, ServiceStatus},
 };
@@ -14,6 +20,7 @@ use crate::ports::{
         ansible_engine::AnsibleEnginePort,
         server_executor::{CommandResult, ServerExecutorPort},
         server_store::ServerStorePort,
+        wireguard_engine::WireGuardEnginePort,
     },
 };
 
@@ -21,6 +28,7 @@ pub struct ServerService {
     server_store: Arc<dyn ServerStorePort>,
     executor: Arc<dyn ServerExecutorPort>,
     ansible_engine: Arc<dyn AnsibleEnginePort>,
+    wireguard_engine: Arc<dyn WireGuardEnginePort>,
 }
 
 impl ServerService {
@@ -28,10 +36,11 @@ impl ServerService {
         server_store: Arc<dyn ServerStorePort>,
         executor: Arc<dyn ServerExecutorPort>,
     ) -> Self {
-        Self::new_with_ansible(
+        Self::new_with_engines(
             server_store,
             executor,
             Arc::new(MockAnsibleEngine::default()),
+            Arc::new(MockWireGuardEngine::default()),
         )
     }
 
@@ -40,11 +49,31 @@ impl ServerService {
         executor: Arc<dyn ServerExecutorPort>,
         ansible_engine: Arc<dyn AnsibleEnginePort>,
     ) -> Self {
+        Self::new_with_engines(
+            server_store,
+            executor,
+            ansible_engine,
+            Arc::new(MockWireGuardEngine::default()),
+        )
+    }
+
+    pub fn new_with_engines(
+        server_store: Arc<dyn ServerStorePort>,
+        executor: Arc<dyn ServerExecutorPort>,
+        ansible_engine: Arc<dyn AnsibleEnginePort>,
+        wireguard_engine: Arc<dyn WireGuardEnginePort>,
+    ) -> Self {
         Self {
             server_store,
             executor,
             ansible_engine,
+            wireguard_engine,
         }
+    }
+
+    pub fn with_wireguard_engine(mut self, engine: Arc<dyn WireGuardEnginePort>) -> Self {
+        self.wireguard_engine = engine;
+        self
     }
 }
 
@@ -187,5 +216,86 @@ impl ServerAdminPort for ServerService {
             )));
         }
         self.ansible_engine.gather_facts(&server).await
+    }
+
+    async fn configure_wireguard(
+        &self,
+        id: &ServerId,
+        iface: WireGuardInterface,
+    ) -> Result<(), DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot configure WireGuard on offline server {}",
+                id
+            )));
+        }
+        self.wireguard_engine.configure_interface(&server, &iface).await
+    }
+
+    async fn add_wireguard_peer(
+        &self,
+        id: &ServerId,
+        iface_name: &str,
+        peer: WireGuardPeer,
+    ) -> Result<(), DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot modify WireGuard peers on offline server {}",
+                id
+            )));
+        }
+        self.wireguard_engine.add_peer(&server, iface_name, &peer).await
+    }
+
+    async fn remove_wireguard_peer(
+        &self,
+        id: &ServerId,
+        iface_name: &str,
+        peer_pubkey: &str,
+    ) -> Result<(), DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot remove WireGuard peers on offline server {}",
+                id
+            )));
+        }
+        self.wireguard_engine.remove_peer(&server, iface_name, peer_pubkey).await
+    }
+
+    async fn get_wireguard_status(
+        &self,
+        id: &ServerId,
+        iface_name: &str,
+    ) -> Result<WireGuardDeviceStatus, DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot query WireGuard status on offline server {}",
+                id
+            )));
+        }
+        self.wireguard_engine.get_device_status(&server, iface_name).await
+    }
+
+    async fn list_wireguard_peers(
+        &self,
+        id: &ServerId,
+        iface_name: &str,
+    ) -> Result<Vec<WireGuardPeer>, DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot list WireGuard peers on offline server {}",
+                id
+            )));
+        }
+        self.wireguard_engine.list_peers(&server, iface_name).await
+    }
+
+    async fn generate_wireguard_keypair(&self) -> Result<(String, String), DomainError> {
+        self.wireguard_engine.generate_keypair().await
     }
 }

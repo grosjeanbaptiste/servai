@@ -7,3 +7,4 @@ pub mod mock;
 pub mod opentofu;
 pub mod registry;
 pub mod system;
+pub mod wireguard;

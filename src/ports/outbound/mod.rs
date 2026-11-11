@@ -9,3 +9,4 @@ pub mod repo_store;
 pub mod server_executor;
 pub mod server_store;
 pub mod stack_store;
+pub mod wireguard_engine;

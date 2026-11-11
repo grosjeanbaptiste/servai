@@ -70,7 +70,7 @@ Lorsqu'un dépôt d'administration est sélectionné (ex: `linuxserver-wireguard
 
 ---
 
-## 🧪 Tests TDD (58/58 Passing - 100% Couverture)
+## 🧪 Tests TDD (62/62 Passing - 100% Couverture)
 
 Pour exécuter l'ensemble des suites de tests TDD :
 ```bash
@@ -82,9 +82,9 @@ cargo test
 - **`tests/catalog_tests.rs` (2 tests)** : Validations du catalogue, compatibilité OS des recettes.
 - **`tests/inspector_and_stack_tests.rs` (3 tests)** : Manifestes de détection d'administration, composition multi-dépôts, compilation des étapes.
 - **`tests/registry_tests.rs` (3 tests)** : Résolution de dépendances entre dépôts, requêtes de recherche multi-critères, profils prédéfinis.
-- **`tests/engine_tests.rs` (6 tests)** : Moteurs d'exécution OpenTofu (plan, apply, state, summary), Ansible (playbooks, task events, module runner, facts gathering) et Crossplane (claims, conditions, XRD, managed resources, reconciliation).
-- **`tests/application_tests.rs` (20 tests)** : Administration, healthchecks, services systemd, métriques, reboot, rollback automatique, dérive, navigation et import catalogue, application directe de recettes, exécution de stacks, recherche dans le registre, installation avec dépendances automatiques, déploiement de profils complets, orchestration OpenTofu (plan, apply, destroy, state), exécution Ansible (playbook, module ad-hoc, inventaire et faits), orchestration Crossplane (claims, status, providers, managed resources).
-- **`tests/api_bioxus_tests.rs` (11 tests)** : Contrats REST complets pour l'UI Bioxus (200, 201, 400, 404, 409, catalogue, recettes, stacks, recherche registre, déploiement de presets, API OpenTofu, Ansible et Crossplane).
+- **`tests/engine_tests.rs` (8 tests)** : Moteurs d'exécution OpenTofu (plan, apply, state, summary), Ansible (playbooks, task events, module runner, facts gathering), Crossplane (claims, conditions, XRD, managed resources) et WireGuard (interfaces wg-quick, pairs cryptographiques, pair keepalive, device status).
+- **`tests/application_tests.rs` (22 tests)** : Administration, healthchecks, services systemd, métriques, reboot, rollback automatique, dérive, navigation et import catalogue, application directe de recettes, exécution de stacks, recherche dans le registre, installation avec dépendances automatiques, déploiement de profils complets, orchestration OpenTofu (plan, apply, destroy, state), exécution Ansible (playbook, module ad-hoc, inventaire et faits), orchestration Crossplane (claims, status, providers, managed resources), gestion WireGuard (configuration interface, ajout/suppression de pairs, monitoring du trafic, génération de clés).
+- **`tests/api_bioxus_tests.rs` (12 tests)** : Contrats REST complets pour l'UI Bioxus (200, 201, 400, 404, 409, catalogue, recettes, stacks, recherche registre, déploiement de presets, API OpenTofu, Ansible, Crossplane et WireGuard).
 
 ---
 
@@ -102,6 +102,12 @@ cargo test
 | `GET` | `/api/v1/servers/:id/metrics` | Métriques temps réel (CPU, RAM, Disque, Uptime) |
 | `POST` | `/api/v1/servers/:id/services/:service/action` | Gérer un service (`Start`, `Stop`, `Restart`, `Reload`, `Status`) |
 | `POST` | `/api/v1/servers/:id/reboot` | Déclencher le redémarrage du serveur |
+| `POST` | `/api/v1/servers/:id/wireguard` | **Configurer une interface WireGuard (`wg0`) et ses pairs** |
+| `GET` | `/api/v1/servers/:id/wireguard/:iface/status` | **Statut, pairs actifs et métriques réseau Rx/Tx WireGuard** |
+| `GET` | `/api/v1/servers/:id/wireguard/:iface/peers` | **Lister les pairs VPN autorisés sur l'interface** |
+| `POST` | `/api/v1/servers/:id/wireguard/:iface/peers` | **Ajouter dynamiquement un pair VPN WireGuard** |
+| `DELETE` | `/api/v1/servers/:id/wireguard/:iface/peers/:pubkey` | **Révoquer/supprimer un pair VPN WireGuard** |
+| `POST` | `/api/v1/wireguard/keypair` | **Générer une paire de clés privées/publiques WireGuard sécurisées** |
 | `POST` | `/api/v1/servers/:id/ansible/playbook` | **Exécuter un playbook Ansible avec variables dynamiques** |
 | `POST` | `/api/v1/servers/:id/ansible/module` | **Exécuter une commande/module ad-hoc Ansible** |
 | `GET` | `/api/v1/servers/:id/ansible/facts` | **Collecter les faits matériels et système Ansible du serveur** |

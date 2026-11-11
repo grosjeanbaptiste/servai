@@ -1370,6 +1370,212 @@ async fn test_bioxus_api_crossplane_endpoints() {
     assert_eq!(prov_json[0]["name"], "provider-aws");
 }
 
+#[tokio::test]
+async fn test_bioxus_api_wireguard_endpoints() {
+    let app = setup_test_app();
+
+    // 1. POST /api/v1/wireguard/keypair
+    let key_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/wireguard/keypair")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(key_res.status(), StatusCode::OK);
+    let key_json: Value = serde_json::from_slice(
+        &key_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let privkey = key_json["private_key"].as_str().unwrap();
+    let pubkey = key_json["public_key"].as_str().unwrap();
+    assert!(!privkey.is_empty());
+    assert!(!pubkey.is_empty());
+
+    // 2. Register server and bring it online
+    let srv_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/servers")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "wg-gateway",
+                        "ip": "10.0.0.77",
+                        "port": 22,
+                        "credentials": "Agent",
+                        "tags": ["wireguard"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let srv_json: Value = serde_json::from_slice(
+        &srv_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let server_id = srv_json["id"].as_str().unwrap();
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/health", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 3. POST /api/v1/servers/:id/wireguard (configure wg0)
+    let cfg_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/wireguard", server_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "wg0",
+                        "private_key": privkey,
+                        "public_key": pubkey,
+                        "listen_port": 51820,
+                        "address": "10.100.0.1/24",
+                        "peers": [
+                            {
+                                "public_key": "peer-initial-pubkey=",
+                                "allowed_ips": ["10.100.0.2/32"]
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(cfg_res.status(), StatusCode::CREATED);
+
+    // 4. GET /api/v1/servers/:id/wireguard/wg0/status
+    let status_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/servers/{}/wireguard/wg0/status", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(status_res.status(), StatusCode::OK);
+    let status_json: Value = serde_json::from_slice(
+        &status_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(status_json["interface"], "wg0");
+    assert_eq!(status_json["active_peers"], 1);
+    assert_eq!(status_json["is_up"], true);
+
+    // 5. POST /api/v1/servers/:id/wireguard/wg0/peers (add peer)
+    let add_peer_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/wireguard/wg0/peers", server_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "public_key": "peer-roadwarrior-pubkey=",
+                        "endpoint": "203.0.113.10:51820",
+                        "allowed_ips": ["10.100.0.3/32"],
+                        "persistent_keepalive": 25
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(add_peer_res.status(), StatusCode::CREATED);
+
+    // 6. GET /api/v1/servers/:id/wireguard/wg0/peers
+    let peers_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/servers/{}/wireguard/wg0/peers", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(peers_res.status(), StatusCode::OK);
+    let peers_json: Value = serde_json::from_slice(
+        &peers_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(peers_json.as_array().unwrap().len(), 2);
+
+    // 7. DELETE /api/v1/servers/:id/wireguard/wg0/peers/:pubkey
+    let del_peer_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/v1/servers/{}/wireguard/wg0/peers/peer-initial-pubkey=",
+                    server_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(del_peer_res.status(), StatusCode::NO_CONTENT);
+
+    // 8. Verify remaining peers
+    let peers_final_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/servers/{}/wireguard/wg0/peers", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let peers_final_json: Value = serde_json::from_slice(
+        &peers_final_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(peers_final_json.as_array().unwrap().len(), 1);
+    assert_eq!(
+        peers_final_json[0]["public_key"],
+        "peer-roadwarrior-pubkey="
+    );
+}
+
+
 
 
 

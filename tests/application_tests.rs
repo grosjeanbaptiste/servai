@@ -879,6 +879,88 @@ async fn test_orchestration_service_crossplane_providers_and_resources() {
     assert_eq!(resources[0].provider, "provider-aws");
 }
 
+#[tokio::test]
+async fn test_server_service_wireguard_interface_and_peer_management() {
+    use servai::domain::engines::wireguard::{WireGuardInterface, WireGuardPeer};
+
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+
+    let server = server_service
+        .register_server(RegisterServerCommand {
+            name: "vpn-gateway".to_string(),
+            ip: "10.0.0.50".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec!["vpn".to_string()],
+        })
+        .await
+        .unwrap();
+    server_service.health_check(&server.id()).await.unwrap();
+
+    // 1. Configure wg0 interface
+    let initial_peer = WireGuardPeer::new(
+        "client-pubkey-1=",
+        None,
+        Some("192.0.2.1:51820".to_string()),
+        vec!["10.200.0.2/32".to_string()],
+        Some(25),
+    )
+    .unwrap();
+
+    let iface = WireGuardInterface::new(
+        "wg0",
+        "srv-privkey-secret=",
+        "srv-pubkey-public=",
+        51820,
+        "10.200.0.1/24",
+        vec![initial_peer],
+    )
+    .unwrap();
+
+    server_service.configure_wireguard(&server.id(), iface).await.unwrap();
+
+    // 2. Query status
+    let status = server_service.get_wireguard_status(&server.id(), "wg0").await.unwrap();
+    assert_eq!(status.interface, "wg0");
+    assert_eq!(status.active_peers, 1);
+    assert!(status.is_up);
+
+    // 3. Add peer
+    let new_peer = WireGuardPeer::new(
+        "client-pubkey-2=",
+        Some("preshared-key-2=".to_string()),
+        None,
+        vec!["10.200.0.3/32".to_string()],
+        None,
+    )
+    .unwrap();
+    server_service.add_wireguard_peer(&server.id(), "wg0", new_peer).await.unwrap();
+
+    let peers = server_service.list_wireguard_peers(&server.id(), "wg0").await.unwrap();
+    assert_eq!(peers.len(), 2);
+
+    // 4. Remove peer
+    server_service.remove_wireguard_peer(&server.id(), "wg0", "client-pubkey-1=").await.unwrap();
+    let peers_after = server_service.list_wireguard_peers(&server.id(), "wg0").await.unwrap();
+    assert_eq!(peers_after.len(), 1);
+    assert_eq!(peers_after[0].public_key, "client-pubkey-2=");
+}
+
+#[tokio::test]
+async fn test_server_service_wireguard_keypair_generation() {
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+
+    let (privkey, pubkey) = server_service.generate_wireguard_keypair().await.unwrap();
+    assert!(!privkey.is_empty());
+    assert!(!pubkey.is_empty());
+    assert_ne!(privkey, pubkey);
+}
+
+
 
 
 

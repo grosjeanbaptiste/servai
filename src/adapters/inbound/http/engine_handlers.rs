@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -16,6 +16,7 @@ use crate::domain::{
             CrossplaneResource,
         },
         opentofu::{TofuApplyResult, TofuPlanResult, TofuState},
+        wireguard::{WireGuardDeviceStatus, WireGuardInterface, WireGuardPeer},
     },
     repository::RepoId,
     server::ServerId,
@@ -197,4 +198,116 @@ pub async fn list_crossplane_providers_handler(
         .list_crossplane_providers()
         .await?;
     Ok(Json(providers))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WireGuardPeerRequest {
+    pub public_key: String,
+    pub preshared_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub allowed_ips: Vec<String>,
+    pub persistent_keepalive: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConfigureWireGuardRequest {
+    pub name: String,
+    pub private_key: String,
+    pub public_key: String,
+    pub listen_port: u16,
+    pub address: String,
+    pub peers: Option<Vec<WireGuardPeerRequest>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WireGuardKeypairResponse {
+    pub private_key: String,
+    pub public_key: String,
+}
+
+pub async fn configure_wireguard_handler(
+    State(state): State<AppState>,
+    Path(server_id): Path<Uuid>,
+    Json(payload): Json<ConfigureWireGuardRequest>,
+) -> Result<StatusCode, ApiError> {
+    let id = ServerId::from_uuid(server_id);
+    let mut peers = Vec::new();
+    if let Some(peer_reqs) = payload.peers {
+        for p in peer_reqs {
+            let peer = WireGuardPeer::new(
+                p.public_key,
+                p.preshared_key,
+                p.endpoint,
+                p.allowed_ips,
+                p.persistent_keepalive,
+            )?;
+            peers.push(peer);
+        }
+    }
+
+    let iface = WireGuardInterface::new(
+        payload.name,
+        payload.private_key,
+        payload.public_key,
+        payload.listen_port,
+        payload.address,
+        peers,
+    )?;
+
+    state.server_service.configure_wireguard(&id, iface).await?;
+    Ok(StatusCode::CREATED)
+}
+
+pub async fn get_wireguard_status_handler(
+    State(state): State<AppState>,
+    Path((server_id, iface)): Path<(Uuid, String)>,
+) -> Result<Json<WireGuardDeviceStatus>, ApiError> {
+    let id = ServerId::from_uuid(server_id);
+    let status = state.server_service.get_wireguard_status(&id, &iface).await?;
+    Ok(Json(status))
+}
+
+pub async fn list_wireguard_peers_handler(
+    State(state): State<AppState>,
+    Path((server_id, iface)): Path<(Uuid, String)>,
+) -> Result<Json<Vec<WireGuardPeer>>, ApiError> {
+    let id = ServerId::from_uuid(server_id);
+    let peers = state.server_service.list_wireguard_peers(&id, &iface).await?;
+    Ok(Json(peers))
+}
+
+pub async fn add_wireguard_peer_handler(
+    State(state): State<AppState>,
+    Path((server_id, iface)): Path<(Uuid, String)>,
+    Json(payload): Json<WireGuardPeerRequest>,
+) -> Result<StatusCode, ApiError> {
+    let id = ServerId::from_uuid(server_id);
+    let peer = WireGuardPeer::new(
+        payload.public_key,
+        payload.preshared_key,
+        payload.endpoint,
+        payload.allowed_ips,
+        payload.persistent_keepalive,
+    )?;
+    state.server_service.add_wireguard_peer(&id, &iface, peer).await?;
+    Ok(StatusCode::CREATED)
+}
+
+pub async fn remove_wireguard_peer_handler(
+    State(state): State<AppState>,
+    Path((server_id, iface, pubkey)): Path<(Uuid, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let id = ServerId::from_uuid(server_id);
+    state.server_service.remove_wireguard_peer(&id, &iface, &pubkey).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn generate_wireguard_keypair_handler(
+    State(state): State<AppState>,
+) -> Result<Json<WireGuardKeypairResponse>, ApiError> {
+    let (private_key, public_key) = state.server_service.generate_wireguard_keypair().await?;
+    Ok(Json(WireGuardKeypairResponse {
+        private_key,
+        public_key,
+    }))
 }

@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    engines::ansible::{AnsibleFacts, AnsibleModuleResult},
+    engines::{
+        ansible::{AnsibleFacts, AnsibleModuleResult},
+        wireguard::{WireGuardDeviceStatus, WireGuardInterface, WireGuardPeer},
+    },
     errors::DomainError,
     server::{Server, ServerId, ServerMetrics, ServerStatus, ServiceAction, ServiceStatus, SshCredentials},
 };
@@ -40,4 +43,34 @@ pub trait ServerAdminPort: Send + Sync {
         args: &str,
     ) -> Result<AnsibleModuleResult, DomainError>;
     async fn gather_ansible_facts(&self, id: &ServerId) -> Result<AnsibleFacts, DomainError>;
+
+    // WireGuard VPN administration
+    async fn configure_wireguard(
+        &self,
+        id: &ServerId,
+        iface: WireGuardInterface,
+    ) -> Result<(), DomainError>;
+    async fn add_wireguard_peer(
+        &self,
+        id: &ServerId,
+        iface_name: &str,
+        peer: WireGuardPeer,
+    ) -> Result<(), DomainError>;
+    async fn remove_wireguard_peer(
+        &self,
+        id: &ServerId,
+        iface_name: &str,
+        peer_pubkey: &str,
+    ) -> Result<(), DomainError>;
+    async fn get_wireguard_status(
+        &self,
+        id: &ServerId,
+        iface_name: &str,
+    ) -> Result<WireGuardDeviceStatus, DomainError>;
+    async fn list_wireguard_peers(
+        &self,
+        id: &ServerId,
+        iface_name: &str,
+    ) -> Result<Vec<WireGuardPeer>, DomainError>;
+    async fn generate_wireguard_keypair(&self) -> Result<(String, String), DomainError>;
 }

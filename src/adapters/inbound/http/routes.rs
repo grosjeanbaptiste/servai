@@ -8,11 +8,13 @@ use std::sync::Arc;
 use crate::adapters::inbound::http::{
     catalog_handlers::{apply_recipe, import_catalog_item, list_catalog},
     engine_handlers::{
-        apply_crossplane_claim_handler, apply_tofu_handler, delete_crossplane_claim_handler,
-        destroy_tofu_handler, gather_ansible_facts_handler, get_crossplane_claim_handler,
-        get_tofu_state_handler, list_crossplane_providers_handler,
-        list_crossplane_resources_handler, plan_tofu_handler, run_ansible_module_handler,
-        run_ansible_playbook_handler,
+        add_wireguard_peer_handler, apply_crossplane_claim_handler, apply_tofu_handler,
+        configure_wireguard_handler, delete_crossplane_claim_handler, destroy_tofu_handler,
+        gather_ansible_facts_handler, generate_wireguard_keypair_handler,
+        get_crossplane_claim_handler, get_tofu_state_handler, get_wireguard_status_handler,
+        list_crossplane_providers_handler, list_crossplane_resources_handler,
+        list_wireguard_peers_handler, plan_tofu_handler, remove_wireguard_peer_handler,
+        run_ansible_module_handler, run_ansible_playbook_handler,
     },
     orchestration_handlers::{
         cancel_orchestration, detect_drift_handler, get_orchestration, trigger_orchestration,
@@ -127,6 +129,27 @@ pub fn create_router(
         .route(
             "/api/v1/crossplane/providers",
             get(list_crossplane_providers_handler),
+        )
+        // WireGuard VPN administration routes (for Bioxus)
+        .route(
+            "/api/v1/servers/{id}/wireguard",
+            post(configure_wireguard_handler),
+        )
+        .route(
+            "/api/v1/servers/{id}/wireguard/{iface}/status",
+            get(get_wireguard_status_handler),
+        )
+        .route(
+            "/api/v1/servers/{id}/wireguard/{iface}/peers",
+            get(list_wireguard_peers_handler).post(add_wireguard_peer_handler),
+        )
+        .route(
+            "/api/v1/servers/{id}/wireguard/{iface}/peers/{pubkey}",
+            axum::routing::delete(remove_wireguard_peer_handler),
+        )
+        .route(
+            "/api/v1/wireguard/keypair",
+            post(generate_wireguard_keypair_handler),
         )
         .with_state(state)
 }

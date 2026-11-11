@@ -5,6 +5,7 @@ use servai::domain::engines::{
         CrossplaneClaim, CrossplaneCondition, CrossplaneReconcileResult, CrossplaneResource,
     },
     opentofu::{TofuApplyResult, TofuPlanResult, TofuPlanSummary, TofuState},
+    wireguard::{WireGuardDeviceStatus, WireGuardInterface, WireGuardPeer},
 };
 
 #[test]
@@ -167,4 +168,79 @@ fn test_crossplane_reconcile_result_and_managed_resources() {
     assert!(!degraded.is_ready());
     assert!(degraded.is_synced());
 }
+
+#[test]
+fn test_wireguard_interface_validation_and_config_generation() {
+    let peer = WireGuardPeer::new(
+        "peer-public-key-abcdef1234567890=",
+        None,
+        Some("198.51.100.1:51820".to_string()),
+        vec!["10.0.0.2/32".to_string()],
+        Some(25),
+    )
+    .unwrap();
+
+    let iface = WireGuardInterface::new(
+        "wg0",
+        "server-private-key-1234567890abcdef=",
+        "server-public-key-abcdef1234567890=",
+        51820,
+        "10.0.0.1/24",
+        vec![peer],
+    )
+    .unwrap();
+
+    assert_eq!(iface.name(), "wg0");
+    assert_eq!(iface.listen_port(), 51820);
+    assert_eq!(iface.address(), "10.0.0.1/24");
+    assert_eq!(iface.peers().len(), 1);
+
+    // Configuration generation in wg-quick format
+    let config = iface.render_wg_quick_config();
+    assert!(config.contains("[Interface]"));
+    assert!(config.contains("PrivateKey = server-private-key-1234567890abcdef="));
+    assert!(config.contains("ListenPort = 51820"));
+    assert!(config.contains("Address = 10.0.0.1/24"));
+    assert!(config.contains("[Peer]"));
+    assert!(config.contains("PublicKey = peer-public-key-abcdef1234567890="));
+    assert!(config.contains("AllowedIPs = 10.0.0.2/32"));
+    assert!(config.contains("PersistentKeepalive = 25"));
+
+    // Validation edge case: empty interface name
+    let invalid = WireGuardInterface::new("", "privkey", "pubkey", 51820, "10.0.0.1/24", vec![]);
+    assert!(invalid.is_err());
+}
+
+#[test]
+fn test_wireguard_peer_and_device_status() {
+    let peer = WireGuardPeer::new(
+        "peer-pubkey-xyz=",
+        Some("preshared-secret-key=".to_string()),
+        None,
+        vec!["10.0.0.3/32".to_string(), "fd00::3/128".to_string()],
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(peer.public_key, "peer-pubkey-xyz=");
+    assert_eq!(peer.preshared_key, Some("preshared-secret-key=".to_string()));
+    assert_eq!(peer.allowed_ips.len(), 2);
+
+    let status = WireGuardDeviceStatus::new(
+        "wg0",
+        "server-pubkey-123=",
+        51820,
+        1,
+        1048576, // 1 MB rx
+        2097152, // 2 MB tx
+        true,
+    );
+
+    assert_eq!(status.interface, "wg0");
+    assert_eq!(status.active_peers, 1);
+    assert_eq!(status.rx_bytes, 1048576);
+    assert_eq!(status.tx_bytes, 2097152);
+    assert!(status.is_up);
+}
+
 

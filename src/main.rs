@@ -32,12 +32,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tofu_engine = Arc::new(servai::adapters::outbound::opentofu::CliOpenTofuAdapter::default());
     let ansible_engine = Arc::new(servai::adapters::outbound::ansible::CliAnsibleAdapter::default());
     let crossplane_engine = Arc::new(servai::adapters::outbound::crossplane::CliCrossplaneAdapter::default());
+    let wireguard_engine = Arc::new(servai::adapters::outbound::wireguard::CliWireGuardAdapter::default());
 
-    let server_service = Arc::new(ServerService::new_with_ansible(
-        server_store.clone(),
-        executor.clone(),
-        ansible_engine.clone(),
-    ));
+    let server_service = Arc::new(
+        ServerService::new_with_engines(
+            server_store.clone(),
+            executor.clone(),
+            ansible_engine.clone(),
+            wireguard_engine,
+        ),
+    );
     let orchestrator_service = Arc::new(
         OrchestrationService::new(
             server_store,
