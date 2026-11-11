@@ -1,162 +1,247 @@
 # Servai
 
-**Servai** est un orchestrateur en Rust conçu pour l'administration intégrale de serveurs en **réutilisant un maximum de dépôts d'administration existants** (Ansible Galaxy, LinuxServer.io, collections GitHub Sysadmin & Homelab). Il intègre un **catalogue standardisé de dépôts d'administration**, un **moteur d'écosystème multi-sources (Ansible Galaxy, LinuxServer.io, GitHub Community)** avec **résolution automatique de dépendances**, un système de **profils prédéfinis (Presets)**, un moteur de **composition multi-dépôts (Admin Stacks)** et expose une API REST réactive conçue pour être consommée directement par l'interface **Bioxus**.
+[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg?logo=rust)](https://www.rust-lang.org)
+[![TDD](https://img.shields.io/badge/methodology-100%25%20Pure%20TDD-brightgreen.svg)](https://en.wikipedia.org/wiki/Test-driven_development)
+[![Tests](https://img.shields.io/badge/tests-71%2F71%20passing-success.svg)](tests/)
+[![Architecture](https://img.shields.io/badge/architecture-Hexagonal%20%28Ports%20%26%20Adapters%29-blue.svg)](#-architecture-hexagonale)
+[![UI](https://img.shields.io/badge/UI-Bioxus%20Ready-6f42c1.svg)](#-endpoints-api-bioxus)
 
-Le projet est développé selon une méthodologie **100% pure TDD (Test-Driven Development)** et suit rigoureusement les principes de l'**Architecture Hexagonale (Ports & Adapteurs)**.
+**Servai** est un orchestrateur universel en Rust conçu pour l'administration intégrale de serveurs. Il unifie l'ensemble de la chaîne de valeur système et cloud : **noms de domaine (Registrars)**, **zones et enregistrements DNS**, **délivrance de certificats TLS/SSL Let's Encrypt**, **tunnels VPN WireGuard**, moteurs d'automatisation déclarative (**OpenTofu**, **Ansible**, **Crossplane**), et **réutilisation maximale de dépôts d'administration existants** (Ansible Galaxy, LinuxServer.io, collections GitHub Sysadmin & Homelab).
+
+Le projet expose une API REST réactive conçue pour alimenter directement l'interface utilisateur **Bioxus**, et est développé selon une méthodologie **100% pure TDD (Test-Driven Development)** dans le respect strict des principes de l'**Architecture Hexagonale**.
 
 ---
 
 ## 🏛️ Architecture Hexagonale
 
 ```text
-                           +------------------------+
-                           |       UI Bioxus        |
-                           +-----------+------------+
-                                       |
-                                       v (REST JSON)
-                 +--------------------------------------------+
-                 |       Inbound Adapter (Axum HTTP)          |
-                 +---------------------+----------------------+
-                                       |
-                   Driving Ports       v
-+-------------------------------------------------------------------------+
-|  [ServerAdminPort]                              [RepoOrchestratorPort]  |
-|                                                                         |
-|  ================ Application Services (Use Cases) ===================  |
-|          ServerService                     OrchestrationService         |
-|                                                                         |
-|  ========================= Domain Model ==============================  |
-|    - Server, ServerId, HostAddress, ServerStatus, ServerSpec            |
-|    - ServerMetrics, ServiceAction, ServiceStatus, ServerLock            |
-|    - AdminPackage, RegistryQuery, ServerProfilePreset, RegistrySource   |
-|    - MultiRepoStack, StackId, StackRepoEntry                            |
-|    - CatalogItem, ConfigVariable, AdminCategory                         |
-|    - ManagedRepository, RepoId, GitRef, RepoKind, SyncStatus            |
-|    - OrchestrationJob, JobId, StepExecution, ExecutionStatus            |
-|    - RollbackPolicy, CompensatingSteps, DriftReport                     |
-|    - DomainError (Validation, NotFound, Conflict, ExecutionFailed)      |
-|                                                                         |
-|  Driven Ports                        v                                  |
-|  [ServerStore] [RepoStore] [JobStore] [StackStore] [Registry] [Catalog] |
-+-------------------------------------------------------------------------+
-        |            |           |           |           |          |
-        v            v           v           v           v          v
-+---------------+ +--------+ +-------+ +----------+ +--------+ +-----------+
-| InMemoryStore | | Mem    | | Mem   | | MemStack | | Multi  | | Standard  |
-| / SQLite      | | Repos  | | Jobs  | | Store    | | Source | | Catalog   |
-|               | |        | |       | |          | | Reg.   | |           |
-+---------------+ +--------+ +-------+ +----------+ +--------+ +-----------+
+                               +----------------------------+
+                               |         UI Bioxus          |
+                               +--------------+-------------+
+                                              |
+                                              v (REST JSON)
+                         +----------------------------------------+
+                         |      Inbound Adapter (Axum HTTP)       |
+                         +--------------------+-------------------+
+                                              |
+      Driving Inbound Ports                   v
++-----------------------------------------------------------------------------------------------+
+|  [ServerAdminPort]    [RepoOrchestratorPort]    [DnsAdminPort]    [RegistrarAdminPort]        |
+|                                                                                               |
+|  =========================== Application Services (Use Cases) ==============================  |
+|     ServerService       OrchestrationService       DnsService       RegistrarService          |
+|                                                                                               |
+|  ================================== Pure Domain Model ======================================  |
+|    - Server, ServerId, HostAddress, ServerStatus, ServerMetrics, ServiceAction                |
+|    - DomainRegistration, RegistrarProvider, ContactInfo, NameserverConfig, DomainStatus       |
+|    - DnsZone, DnsRecord, DnsRecordType, Ttl, DnssecStatus, DnsPropagation                     |
+|    - TlsCertificate, ChallengeType, CertStatus (ACME Let's Encrypt)                           |
+|    - OpenTofuEngine, AnsibleEngine, CrossplaneEngine, WireGuardEngine                         |
+|    - AdminPackage, RegistryQuery, ServerProfilePreset, MultiRepoStack, CatalogItem            |
+|    - ManagedRepository, OrchestrationJob, StepExecution, DriftReport, RollbackPolicy         |
+|    - DomainError (Validation, NotFound, Conflict, ExecutionFailed)                            |
+|                                                                                               |
+|  Driven Outbound Ports                      v                                                 |
+|  [ServerStore]   [RepoStore]    [JobStore]      [ServerExecutor]    [GitProvider]             |
+|  [OpenTofuEngine][AnsibleEngine][CrossplaneEngine][WireGuardEngine] [DnsProvider] [Registrar] |
++-----------------------------------------------------------------------------------------------+
+         |              |              |                 |                   |             |
+         v              v              v                 v                   v             v
+   +-----------+  +-----------+  +------------+   +--------------+    +------------+ +------------+
+   | InMemory  |  | InMemory  |  | SSH Exec   |   | CLI Adapters |    | DNS Clis / | | Registrars |
+   | / SQLite  |  | Jobs/Repos|  | / Systemd  |   | Tofu/Ansible |    | Cloudflare | | OVH/Gandi/ |
+   | Stores    |  | / Stacks  |  | & Metrics  |   | Xplane/WG    |    | Route53    | | Namecheap  |
+   +-----------+  +-----------+  +------------+   +--------------+    +------------+ +------------+
 ```
 
 ---
 
-## 📦 Réutilisation Maximale de Dépôts d'Administration
+## 🚀 Capacités d'Orchestration Intégrale
 
-Servai capitalise sur l'écosystème open source existant pour éviter toute réinvention de la roue :
+### 1. Registrar, DNS & Certificats Auto-TLS
+- **Registrar multi-fournisseurs** : Vérification de la disponibilité et des tarifs, commande/enregistrement, gestion des serveurs de noms (Nameservers) et bascule de renouvellement automatique (Cloudflare, OVH, Gandi, Namecheap, Route53, Porkbun).
+- **Gestion des Zones & Enregistrements DNS** : Création de zones avec support DNSSEC, gestion granulaire des enregistrements (`A`, `AAAA`, `CNAME`, `MX`, `TXT`, `SRV`, `CAA`, `NS`, `PTR`, `SOA`) et vérification de la propagation DNS mondiale en direct.
+- **Certificats TLS / ACME automatiques** : Provisioning de certificats Let's Encrypt via challenge DNS-01 ou HTTP-01 avec suivi du nombre de jours de validité restants.
+- **Liaison Serveur-Domaine en un clic (`bind_server_domain`)** : Associe instantanément un serveur à son domaine, crée les enregistrements DNS A correspondants et émet le certificat SSL TLS valide.
 
-### 1. Registre Multi-Sources Intégré
-- **Ansible Galaxy** : Rôles et collections de référence ([dev-sec/ansible-collection-hardening](https://github.com/dev-sec/ansible-collection-hardening.git), [geerlingguy/ansible-role-security](https://github.com/geerlingguy/ansible-role-security.git), [geerlingguy/ansible-role-docker](https://github.com/geerlingguy/ansible-role-docker.git), [geerlingguy/ansible-role-nginx](https://github.com/geerlingguy/ansible-role-nginx.git), [geerlingguy/ansible-role-postgresql](https://github.com/geerlingguy/ansible-role-postgresql.git)).
-- **LinuxServer.io** : Dépôts de services conteneurisés sécurisés ([linuxserver/docker-wireguard](https://github.com/linuxserver/docker-wireguard.git), [linuxserver/docker-nextcloud](https://github.com/linuxserver/docker-nextcloud.git), [linuxserver/docker-swag](https://github.com/linuxserver/docker-swag.git)).
-- **GitHub Community & Cloud-Native** : [traefik/traefik](https://github.com/traefik/traefik.git), [caddyserver/caddy](https://github.com/caddyserver/caddy.git), [prometheus-community/ansible-node-exporter](https://github.com/prometheus-community/ansible-node-exporter.git), [netdata/netdata](https://github.com/netdata/netdata.git), [crowdsecurity/crowdsec](https://github.com/crowdsecurity/crowdsec.git), [borgbackup/borg](https://github.com/borgbackup/borg.git), [restic/restic](https://github.com/restic/restic.git), [k3s-io/k3s-ansible](https://github.com/k3s-io/k3s-ansible.git), [dani-garcia/vaultwarden](https://github.com/dani-garcia/vaultwarden.git), [louislam/uptime-kuma](https://github.com/louislam/uptime-kuma.git), [grafana/grafana](https://github.com/grafana/grafana.git).
+### 2. Moteurs d'Automatisation Système & Cloud-Native
+- **OpenTofu / Terraform** : `plan`, `apply`, `destroy` et inspection de l'état (`state`) avec détection des changements (ressources ajoutées, modifiées, détruites).
+- **Ansible** : Exécution de playbooks complexes, exécution de modules ad-hoc (`shell`, `ping`, `apt`, etc.) et collecte des faits système et matériels (`facts`).
+- **Crossplane** : Pilotage de plans de contrôle Kubernetes déclaratifs : déploiement de Claims composites (`XRC`), vérification de la synchronisation et des conditions de disponibilité, inspection des ressources managées (`MR`) et des Providers cloud.
+- **WireGuard VPN** : Configuration intégrale d'interfaces sécurisées (`wg-quick`), génération cryptographique de paires de clés (Curve25519), enregistrement/révocation dynamique de pairs (clients nomades, passerelles inter-sites) et monitoring du trafic réseau Rx/Tx.
 
-### 2. Résolution Automatique de Dépendances Inter-Dépôts
-Lorsqu'un dépôt d'administration est sélectionné (ex: `linuxserver-wireguard` ou `traefik-proxy`), Servai résout automatiquement ses dépendances d'infrastructure (ex: `geerlingguy-docker`), injecte les étapes préalables dans le bon ordre d'exécution et gère la compensation de rollback inverse en cas de défaillance.
-
-### 3. Profils de Serveur Prédéfinis (Presets)
-- `secure-web-baseline` : Hardening Linux CIS + UFW/Fail2ban + Caddy auto-HTTPS.
-- `docker-application-host` : Hardening Linux + Pare-feu + Docker Engine + Traefik v3.
-- `observability-node` : Prometheus Node Exporter + Netdata temps réel + Grafana.
-- `homelab-private-cloud` : Hardening + Docker + WireGuard VPN + Nextcloud + Vaultwarden.
+### 3. Réutilisation Maximale de Dépôts Existants
+- **Registre Multi-Sources** : Catalogue indexant nativement [Ansible Galaxy](https://galaxy.ansible.com), [LinuxServer.io](https://fleet.linuxserver.io) et les collections GitHub Sysadmin de référence.
+- **Résolution Automatique de Dépendances** : Lorsqu'un service est sélectionné (ex: un conteneur LinuxServer ou un proxy Traefik), Servai installe automatiquement ses prérequis (ex: moteur Docker, configuration du pare-feu UFW) dans le bon ordre.
+- **Profils de Serveur Prédéfinis (Presets)** :
+  - `secure-web-baseline` : Hardening Linux CIS + UFW/Fail2ban + Caddy auto-HTTPS.
+  - `docker-application-host` : Hardening Linux + Pare-feu + Docker Engine + Traefik v3.
+  - `observability-node` : Prometheus Node Exporter + Netdata temps réel + Grafana.
+  - `homelab-private-cloud` : Hardening + Docker + WireGuard VPN + Nextcloud + Vaultwarden.
+- **Multi-Repo Stacks** : Combinaison de dépôts hétérogènes dans un pipeline unifié avec étapes compensatoires de rollback inversé en cas d'erreur.
 
 ---
 
 ## 🧪 Tests TDD (71/71 Passing - 100% Couverture)
 
-Pour exécuter l'ensemble des suites de tests TDD :
+L'intégralité du projet est développée en **Test-Driven Development pur** (Red $\rightarrow$ Green $\rightarrow$ Refactor) :
+
 ```bash
 cargo test
 ```
 
 ### Découpage des 8 suites de tests :
-- **`tests/domain_tests.rs` (13 tests)** : Cycle de vie, verrous de concurrence, validation, métriques, rollback, dérive.
-- **`tests/catalog_tests.rs` (2 tests)** : Validations du catalogue, compatibilité OS des recettes.
-- **`tests/inspector_and_stack_tests.rs` (3 tests)** : Manifestes de détection d'administration, composition multi-dépôts, compilation des étapes.
-- **`tests/registry_tests.rs` (3 tests)** : Résolution de dépendances entre dépôts, requêtes de recherche multi-critères, profils prédéfinis.
-- **`tests/engine_tests.rs` (8 tests)** : Moteurs d'exécution OpenTofu (plan, apply, state, summary), Ansible (playbooks, task events, module runner, facts gathering), Crossplane (claims, conditions, XRD, managed resources) et WireGuard (interfaces wg-quick, pairs cryptographiques, pair keepalive, device status).
-- **`tests/dns_and_registrar_tests.rs` (7 tests)** : Enregistrement de noms de domaine auprès des registrars (Cloudflare, OVH, Gandi, Namecheap, Route53, Porkbun), configuration des serveurs DNS (nameservers), gestion des zones DNS et enregistrements (A, AAAA, CNAME, MX, TXT, SRV, CAA), validation du TTL et DNSSEC, propagation DNS, cycle de vie des certificats TLS/ACME (DNS-01, HTTP-01), et liaison unifiée domaine-serveur avec auto-provisioning SSL (`bind_server_domain`).
-- **`tests/application_tests.rs` (22 tests)** : Administration, healthchecks, services systemd, métriques, reboot, rollback automatique, dérive, navigation et import catalogue, application directe de recettes, exécution de stacks, recherche dans le registre, installation avec dépendances automatiques, déploiement de profils complets, orchestration OpenTofu (plan, apply, destroy, state), exécution Ansible (playbook, module ad-hoc, inventaire et faits), orchestration Crossplane (claims, status, providers, managed resources), gestion WireGuard (configuration interface, ajout/suppression de pairs, monitoring du trafic, génération de clés).
-- **`tests/api_bioxus_tests.rs` (14 tests)** : Contrats REST complets pour l'UI Bioxus (200, 201, 204, 400, 404, 409, 422, catalogue, recettes, stacks, recherche registre, déploiement de presets, API OpenTofu, Ansible, Crossplane, WireGuard, Registrar, DNS et Server-Domain Binding avec auto-SSL).
+
+| Suite de test | Tests | Couverture fonctionnelle |
+| :--- | :---: | :--- |
+| [`tests/domain_tests.rs`](tests/domain_tests.rs) | **13** | Machine à états du serveur, verrous de concurrence, validation des specs, métriques, rollback automatique, détection de dérive (drift). |
+| [`tests/catalog_tests.rs`](tests/catalog_tests.rs) | **2** | Validation des recettes d'administration, métadonnées, compatibilité des distributions Linux. |
+| [`tests/inspector_and_stack_tests.rs`](tests/inspector_and_stack_tests.rs) | **3** | Détection automatique des manifestes (Ansible, Compose, Tofu), compilation des étapes multi-dépôts. |
+| [`tests/registry_tests.rs`](tests/registry_tests.rs) | **3** | Indexation multi-sources, résolution arborescente de dépendances, composition de profils de serveur. |
+| [`tests/engine_tests.rs`](tests/engine_tests.rs) | **8** | Moteurs OpenTofu (plan, apply, destroy, state), Ansible (playbooks, task events, modules, facts), Crossplane (claims, readiness, managed resources) et WireGuard (interfaces, pairs, trafic). |
+| [`tests/dns_and_registrar_tests.rs`](tests/dns_and_registrar_tests.rs) | **7** | Enregistrement de domaines, nameservers, zones DNS, types d'enregistrements (A, AAAA, MX, TXT, etc.), TTL, DNSSEC, propagation, certificats TLS et liaison serveur-domaine (`bind_server_domain`). |
+| [`tests/application_tests.rs`](tests/application_tests.rs) | **22** | Cas d'usage applicatifs complets : administration, healthchecks, services systemd, rollback, catalogue, registry, stacks, OpenTofu, Ansible, Crossplane, WireGuard. |
+| [`tests/api_bioxus_tests.rs`](tests/api_bioxus_tests.rs) | **14** | Contrats REST complets pour l'UI Bioxus (codes HTTP 200, 201, 204, 400, 404, 409, 422, endpoints serveurs, domaines, DNS, TLS, moteurs et orchestrations). |
 
 ---
 
 ## 🌐 Endpoints API Bioxus
 
+L'API REST expose tous les services nécessaires à l'interface d'administration **Bioxus** :
+
+### 🖥️ Administration du Serveur & Liaison de Domaine
 | Méthode | Route | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/v1/health` | Statut de l'API Servai |
-| `POST` | `/api/v1/servers` | Enregistrer un nouveau serveur |
-| `GET` | `/api/v1/servers` | Lister les serveurs enregistrés |
-| `GET` | `/api/v1/servers/:id` | Détails d'un serveur |
-| `POST` | `/api/v1/servers/:id/health` | Ping & détection des specs système |
-| `POST` | `/api/v1/servers/:id/maintenance` | Activer/désactiver le mode maintenance |
-| `POST` | `/api/v1/servers/:id/execute` | Exécuter une commande administrative |
-| `GET` | `/api/v1/servers/:id/metrics` | Métriques temps réel (CPU, RAM, Disque, Uptime) |
-| `POST` | `/api/v1/servers/:id/services/:service/action` | Gérer un service (`Start`, `Stop`, `Restart`, `Reload`, `Status`) |
-| `POST` | `/api/v1/servers/:id/reboot` | Déclencher le redémarrage du serveur |
-| `POST` | `/api/v1/servers/:id/bind-domain` | **Lier un domaine au serveur, créer le record DNS A et délivrer le certificat TLS Let's Encrypt (Auto-SSL)** |
-| `GET` | `/api/v1/domains/check?domain=:name` | **Vérifier la disponibilité et le prix d'un nom de domaine auprès du Registrar** |
-| `POST` | `/api/v1/domains` | **Acheter / Enregistrer un nom de domaine (Cloudflare, OVH, Gandi, Namecheap, Route53, Porkbun)** |
-| `GET` | `/api/v1/domains` | **Lister les noms de domaine gérés** |
-| `GET` | `/api/v1/domains/:domain` | **Détails d'enregistrement d'un domaine** |
-| `PUT` | `/api/v1/domains/:domain/nameservers` | **Mettre à jour les serveurs de noms (Nameservers) du domaine** |
-| `PUT` | `/api/v1/domains/:domain/auto-renew` | **Activer ou désactiver le renouvellement automatique du domaine** |
-| `POST` | `/api/v1/dns/zones` | **Créer une zone DNS avec ou sans DNSSEC** |
-| `GET` | `/api/v1/dns/zones` | **Lister les zones DNS** |
-| `GET` | `/api/v1/dns/zones/:domain` | **Inspecter une zone DNS et tous ses enregistrements** |
-| `POST` | `/api/v1/dns/zones/:domain/records` | **Créer / Mettre à jour un enregistrement DNS (A, AAAA, CNAME, MX, TXT, etc.)** |
-| `DELETE` | `/api/v1/dns/zones/:domain/records/:id` | **Supprimer un enregistrement DNS** |
-| `GET` | `/api/v1/dns/zones/:domain/propagate` | **Vérifier en temps réel la propagation mondiale d'un enregistrement DNS** |
-| `POST` | `/api/v1/servers/:id/wireguard` | **Configurer une interface WireGuard (`wg0`) et ses pairs** |
-| `GET` | `/api/v1/servers/:id/wireguard/:iface/status` | **Statut, pairs actifs et métriques réseau Rx/Tx WireGuard** |
-| `GET` | `/api/v1/servers/:id/wireguard/:iface/peers` | **Lister les pairs VPN autorisés sur l'interface** |
-| `POST` | `/api/v1/servers/:id/wireguard/:iface/peers` | **Ajouter dynamiquement un pair VPN WireGuard** |
-| `DELETE` | `/api/v1/servers/:id/wireguard/:iface/peers/:pubkey` | **Révoquer/supprimer un pair VPN WireGuard** |
-| `POST` | `/api/v1/wireguard/keypair` | **Générer une paire de clés privées/publiques WireGuard sécurisées** |
-| `POST` | `/api/v1/servers/:id/ansible/playbook` | **Exécuter un playbook Ansible avec variables dynamiques** |
-| `POST` | `/api/v1/servers/:id/ansible/module` | **Exécuter une commande/module ad-hoc Ansible** |
-| `GET` | `/api/v1/servers/:id/ansible/facts` | **Collecter les faits matériels et système Ansible du serveur** |
-| `POST` | `/api/v1/tofu/plan` | **Calculer un plan d'infrastructure OpenTofu** |
-| `POST` | `/api/v1/tofu/apply` | **Appliquer une configuration OpenTofu (auto-approve)** |
-| `POST` | `/api/v1/tofu/destroy` | **Détruire les ressources gérées par OpenTofu** |
-| `GET` | `/api/v1/tofu/state/:repo_id` | **Inspecter l'état (State/Lineage) OpenTofu en JSON** |
-| `POST` | `/api/v1/crossplane/claims` | **Déployer un Claim Crossplane (Composite Resource Claim)** |
-| `GET` | `/api/v1/crossplane/claims/:namespace/:name` | **Inspecter le statut, conditions et readiness d'un Claim Crossplane** |
-| `DELETE` | `/api/v1/crossplane/claims/:namespace/:name` | **Supprimer un Claim Crossplane et libérer les ressources managées** |
-| `GET` | `/api/v1/crossplane/resources` | **Lister les ressources managées Crossplane (`Managed Resources`)** |
-| `GET` | `/api/v1/crossplane/providers` | **Vérifier l'état et la santé des Providers Crossplane (`provider-aws`, etc.)** |
-| `GET` | `/api/v1/registry/search` | **Recherche dans l'écosystème de dépôts (Galaxy, LinuxServer, GitHub)** |
-| `GET` | `/api/v1/registry/presets` | **Lister les profils de serveur complets (Presets multi-dépôts)** |
-| `POST` | `/api/v1/servers/:id/packages/:package_id/install` | **Installer un dépôt avec résolution automatique de ses dépendances** |
-| `POST` | `/api/v1/servers/:id/presets/:preset_id/apply` | **Déployer un profil complet multi-dépôts sur le serveur en un clic** |
-| `POST` | `/api/v1/servers/:id/recipes/:recipe_id/apply` | Déployer une recette d'administration standard |
-| `POST` | `/api/v1/servers/:id/stacks/:stack_id/apply` | Appliquer un stack multi-dépôts sur le serveur |
-| `GET` | `/api/v1/catalog` | Parcourir les dépôts d'administration |
-| `POST` | `/api/v1/catalog/:id/import` | Importer un dépôt du catalogue dans Servai |
-| `POST` | `/api/v1/stacks` | Créer un stack combinant plusieurs dépôts existants |
-| `GET` | `/api/v1/stacks` | Lister les stacks multi-dépôts configurés |
-| `POST` | `/api/v1/repos` | Enregistrer un dépôt existant personnalisé (Ansible, Docker Compose, OpenTofu, Crossplane, etc.) |
-| `GET` | `/api/v1/repos` | Lister les dépôts orchestrés |
-| `POST` | `/api/v1/repos/:id/sync` | Synchroniser le dépôt Git |
-| `POST` | `/api/v1/orchestrations` | Déclencher l'orchestration sur un serveur |
-| `GET` | `/api/v1/orchestrations/:id` | Suivi et journaux d'exécution du job |
-| `POST` | `/api/v1/orchestrations/:id/cancel` | Annuler un job d'orchestration en cours |
-| `POST` | `/api/v1/orchestrations/drift` | Détecter les écarts de configuration (Drift) |
+| `GET` | `/api/v1/health` | Statut et version de Servai |
+| `POST` | `/api/v1/servers` | Enregistrer un nouveau serveur physique ou VPS |
+| `GET` | `/api/v1/servers` | Lister les serveurs gérés |
+| `GET` | `/api/v1/servers/{id}` | Inspecter la fiche détaillée d'un serveur |
+| `POST` | `/api/v1/servers/{id}/health` | Ping SSH et auto-détection des caractéristiques système |
+| `POST` | `/api/v1/servers/{id}/maintenance` | Activer ou désactiver le mode maintenance |
+| `POST` | `/api/v1/servers/{id}/execute` | Exécuter une commande administrative sur le serveur |
+| `GET` | `/api/v1/servers/{id}/metrics` | Métriques en temps réel (CPU, RAM, Disque, Uptime) |
+| `POST` | `/api/v1/servers/{id}/services/{service}/action` | Contrôle d'un service systemd (`Start`, `Stop`, `Restart`, `Reload`, `Status`) |
+| `POST` | `/api/v1/servers/{id}/reboot` | Déclencher le redémarrage ordonné du serveur |
+| `POST` | `/api/v1/servers/{id}/bind-domain` | **Lier un nom de domaine au serveur, créer le DNS A et émettre le certificat SSL TLS** |
+
+### 🌐 Registrar de Noms de Domaine
+| Méthode | Route | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/domains/check?domain={name}` | Vérifier la disponibilité et le prix d'un nom de domaine |
+| `POST` | `/api/v1/domains` | Enregistrer un domaine (Cloudflare, OVH, Gandi, Namecheap, Route53, Porkbun) |
+| `GET` | `/api/v1/domains` | Lister les noms de domaine gérés |
+| `GET` | `/api/v1/domains/{domain}` | Consulter les détails d'enregistrement d'un domaine |
+| `PUT` | `/api/v1/domains/{domain}/nameservers` | Mettre à jour les serveurs de noms (Nameservers) |
+| `PUT` | `/api/v1/domains/{domain}/auto-renew` | Activer ou désactiver le renouvellement automatique |
+
+### 🧭 Gestion DNS & Propagation
+| Méthode | Route | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/dns/zones` | Créer une zone DNS avec ou sans DNSSEC |
+| `GET` | `/api/v1/dns/zones` | Lister toutes les zones DNS gérées |
+| `GET` | `/api/v1/dns/zones/{domain}` | Consulter une zone DNS et tous ses enregistrements |
+| `POST` | `/api/v1/dns/zones/{domain}/records` | Créer ou mettre à jour un enregistrement (`A`, `AAAA`, `CNAME`, `MX`, `TXT`, etc.) |
+| `DELETE` | `/api/v1/dns/zones/{domain}/records/{id}` | Supprimer un enregistrement DNS |
+| `GET` | `/api/v1/dns/zones/{domain}/propagate` | Vérifier la propagation DNS d'un enregistrement en temps réel |
+
+### 🔒 VPN WireGuard
+| Méthode | Route | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/servers/{id}/wireguard` | Déployer et configurer une interface WireGuard (`wg0`) |
+| `GET` | `/api/v1/servers/{id}/wireguard/{iface}/status` | Statut, pairs connectés et statistiques Rx/Tx |
+| `GET` | `/api/v1/servers/{id}/wireguard/{iface}/peers` | Lister les pairs VPN autorisés |
+| `POST` | `/api/v1/servers/{id}/wireguard/{iface}/peers` | Ajouter dynamiquement un nouveau pair VPN |
+| `DELETE` | `/api/v1/servers/{id}/wireguard/{iface}/peers/{pubkey}` | Révoquer un pair VPN |
+| `POST` | `/api/v1/wireguard/keypair` | Générer une paire de clés cryptographiques sécurisées |
+
+### ⚙️ Automatisation OpenTofu & Ansible
+| Méthode | Route | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/tofu/plan` | Calculer le plan d'exécution d'un dépôt OpenTofu |
+| `POST` | `/api/v1/tofu/apply` | Appliquer les modifications d'infrastructure OpenTofu |
+| `POST` | `/api/v1/tofu/destroy` | Détruire les ressources gérées par OpenTofu |
+| `GET` | `/api/v1/tofu/state/{repo_id}` | Récupérer l'état (State/Lineage) OpenTofu au format JSON |
+| `POST` | `/api/v1/servers/{id}/ansible/playbook` | Exécuter un playbook Ansible avec variables dynamiques |
+| `POST` | `/api/v1/servers/{id}/ansible/module` | Exécuter un module ad-hoc Ansible (`shell`, `apt`, etc.) |
+| `GET` | `/api/v1/servers/{id}/ansible/facts` | Collecter les faits matériels et logiciels du serveur |
+
+### ☸️ Plans de Contrôle Crossplane
+| Méthode | Route | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/crossplane/claims` | Déployer un Claim Crossplane (Composite Resource Claim) |
+| `GET` | `/api/v1/crossplane/claims/{namespace}/{name}` | Suivre le statut, les conditions et la synchronisation du Claim |
+| `DELETE` | `/api/v1/crossplane/claims/{namespace}/{name}` | Supprimer un Claim et détruire les ressources sous-jacentes |
+| `GET` | `/api/v1/crossplane/resources` | Lister les ressources managées Cloud (`Managed Resources`) |
+| `GET` | `/api/v1/crossplane/providers` | Inspecter la santé des providers Crossplane (`provider-aws`, etc.) |
+
+### 📦 Registre, Presets, Stacks & Orchestrations
+| Méthode | Route | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/registry/search` | Rechercher dans l'écosystème de dépôts (Galaxy, LinuxServer, GitHub) |
+| `GET` | `/api/v1/registry/presets` | Lister les profils de serveur complets (Presets multi-dépôts) |
+| `POST` | `/api/v1/servers/{id}/packages/{pkg_id}/install` | Installer un paquet avec résolution automatique de dépendances |
+| `POST` | `/api/v1/servers/{id}/presets/{preset_id}/apply` | Déployer un profil complet multi-dépôts en un clic |
+| `GET` | `/api/v1/catalog` | Explorer les recettes du catalogue standard |
+| `POST` | `/api/v1/catalog/{id}/import` | Importer une recette dans Servai |
+| `POST` | `/api/v1/servers/{id}/recipes/{recipe_id}/apply` | Déployer une recette standard sur le serveur |
+| `POST` | `/api/v1/stacks` | Créer un stack multi-dépôts |
+| `GET` | `/api/v1/stacks` | Lister les stacks multi-dépôts |
+| `POST` | `/api/v1/servers/{id}/stacks/{stack_id}/apply` | Déployer un stack multi-dépôts sur le serveur |
+| `POST` | `/api/v1/repos` | Déclarer un dépôt personnalisé (Git/Ansible/Compose/Tofu) |
+| `GET` | `/api/v1/repos` | Lister les dépôts déclarés |
+| `POST` | `/api/v1/repos/{id}/sync` | Synchroniser le dépôt Git |
+| `POST` | `/api/v1/orchestrations` | Déclencher un job d'orchestration |
+| `GET` | `/api/v1/orchestrations/{id}` | Suivre l'avancement et les logs d'un job |
+| `POST` | `/api/v1/orchestrations/{id}/cancel` | Annuler un job en cours avec rollback compensatoire |
+| `POST` | `/api/v1/orchestrations/drift` | Détecter les dérives de configuration (Drift) |
 
 ---
 
-## 🚀 Démarrage du serveur
+## 🚀 Démarrage Rapide
 
+### Prérequis
+- [Rust 1.80+](https://rustup.rs/)
+- `ssh` / `git` installés localement
+
+### Lancement du serveur API
 ```bash
 cargo run
 ```
-Le serveur écoute par défaut sur `http://0.0.0.0:8080` avec le support CORS activé pour l'UI **Bioxus**.
+
+Par défaut, Servai écoute sur `http://0.0.0.0:8080` avec les en-têtes CORS permissifs configurés pour les connexions depuis l'UI **Bioxus**.
+
+### Exemples d'appels cURL
+
+**1. Lier un serveur à un domaine avec délivrance automatique du certificat SSL :**
+```bash
+curl -X POST http://localhost:8080/api/v1/servers/550e8400-e29b-41d4-a716-446655440000/bind-domain \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "app.bioxus.cloud"}'
+```
+
+**2. Enregistrer un nom de domaine via le Registrar :**
+```bash
+curl -X POST http://localhost:8080/api/v1/domains \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "mon-domaine.org",
+    "provider": "Cloudflare",
+    "contact_name": "DevOps Lead",
+    "contact_email": "ops@bioxus.org",
+    "contact_phone": "+33123456789",
+    "contact_city": "Paris",
+    "contact_country": "France",
+    "nameservers": ["ns1.cloudflare.com", "ns2.cloudflare.com"],
+    "auto_renew": true
+  }'
+```
+
+**3. Déployer un profil complet multi-dépôts (Hardening + Docker + WireGuard + Proxy) :**
+```bash
+curl -X POST http://localhost:8080/api/v1/servers/550e8400-e29b-41d4-a716-446655440000/presets/homelab-private-cloud/apply
+```
+
+---
+
+## 📄 Licence
+Ce projet est sous licence MIT.
