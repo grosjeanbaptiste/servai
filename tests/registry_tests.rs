@@ -97,3 +97,25 @@ fn test_server_profile_preset_composition() {
     assert_eq!(preset.package_ids()[0], "dev-sec-hardening");
     assert_eq!(preset.package_ids()[3], "caddy-proxy");
 }
+
+#[test]
+fn test_gibs_developer_node_preset_composition() {
+    let preset = ServerProfilePreset::new(
+        "gibs-developer-node",
+        "GIBS Developer Node",
+        "Hardened server + Docker + Dotfiles (Stow) + System Status (ss) sensor + WireGuard VPN",
+        vec![
+            "dev-sec-hardening".to_string(),
+            "geerlingguy-docker".to_string(),
+            "dotfiles-stow".to_string(),
+            "ss-sensor".to_string(),
+            "linuxserver-wireguard".to_string(),
+        ],
+    )
+    .expect("valid preset");
+
+    assert_eq!(preset.id(), "gibs-developer-node");
+    assert_eq!(preset.package_ids().len(), 5);
+    assert!(preset.package_ids().contains(&"dotfiles-stow".to_string()));
+    assert!(preset.package_ids().contains(&"ss-sensor".to_string()));
+}

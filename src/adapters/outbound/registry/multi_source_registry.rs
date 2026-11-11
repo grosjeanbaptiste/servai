@@ -255,6 +255,30 @@ impl Default for MultiSourceAdminRegistry {
                 vec![],
                 63000,
             ).unwrap(),
+            AdminPackage::new(
+                "dotfiles-stow",
+                "Dotfiles & Machine State Provisioning",
+                "Personalized dotfiles, shell environment, and GNU Stow manifests.",
+                RegistrySource::GitHubCommunity,
+                "https://github.com/grosjeanbaptiste/dotfiles.git",
+                "main",
+                AdminCategory::Security,
+                vec![],
+                vec!["Ubuntu".to_string(), "Debian".to_string(), "Darwin".to_string()],
+                50,
+            ).unwrap(),
+            AdminPackage::new(
+                "ss-sensor",
+                "SS High-Precision System Sensor",
+                "Modular diagnostic and administration sensor for kernel, network, memory, and processes.",
+                RegistrySource::GitHubCommunity,
+                "https://github.com/grosjeanbaptiste/ss.git",
+                "main",
+                AdminCategory::Monitoring,
+                vec![],
+                vec!["Ubuntu".to_string(), "Debian".to_string(), "Darwin".to_string()],
+                100,
+            ).unwrap(),
         ];
 
         let presets = vec![
@@ -300,6 +324,18 @@ impl Default for MultiSourceAdminRegistry {
                     "linuxserver-wireguard".to_string(),
                     "linuxserver-nextcloud".to_string(),
                     "vaultwarden-server".to_string(),
+                ],
+            ).unwrap(),
+            ServerProfilePreset::new(
+                "gibs-developer-node",
+                "GIBS Developer Node",
+                "Hardened server + Docker + Dotfiles (Stow) + System Status (ss) sensor + WireGuard VPN.",
+                vec![
+                    "dev-sec-hardening".to_string(),
+                    "geerlingguy-docker".to_string(),
+                    "dotfiles-stow".to_string(),
+                    "ss-sensor".to_string(),
+                    "linuxserver-wireguard".to_string(),
                 ],
             ).unwrap(),
         ];

@@ -121,6 +121,32 @@ impl Default for StandardServerAdminCatalog {
                     ConfigVariable::new("domain", "Domain name", None, false),
                 ],
             ).unwrap(),
+            CatalogItem::new(
+                "dotfiles-stow",
+                "Dotfiles & Environment Provisioning (GNU Stow)",
+                "Automated symlink management for zsh, starship, git, and developer machine environment via GNU Stow.",
+                AdminCategory::Security,
+                "https://github.com/grosjeanbaptiste/dotfiles.git",
+                GitRef::Branch("main".to_string()),
+                RepoKind::ShellManifest,
+                vec!["Ubuntu".to_string(), "Debian".to_string(), "Darwin".to_string()],
+                vec![
+                    ConfigVariable::new("stow_packages", "Packages to stow (comma-separated)", Some("starship,zsh,git".to_string()), false),
+                ],
+            ).unwrap(),
+            CatalogItem::new(
+                "ss-sensor",
+                "System Status & Telemetry Sensor (ss)",
+                "High-precision modular telemetry agent (kernel, network sockets, memory RSS/swap, processes, storage I/O).",
+                AdminCategory::Monitoring,
+                "https://github.com/grosjeanbaptiste/ss.git",
+                GitRef::Branch("main".to_string()),
+                RepoKind::RawConfig,
+                vec!["Ubuntu".to_string(), "Debian".to_string(), "Darwin".to_string()],
+                vec![
+                    ConfigVariable::new("metrics_interval_secs", "Telemetry collection frequency", Some("5".to_string()), false),
+                ],
+            ).unwrap(),
         ];
 
         Self { items }
