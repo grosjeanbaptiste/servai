@@ -3,12 +3,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::adapters::outbound::{
+    ansible::MockAnsibleEngine,
     catalog::StandardServerAdminCatalog,
     memory::stack_store::InMemoryStackStore,
+    opentofu::MockOpenTofuEngine,
     registry::MultiSourceAdminRegistry,
 };
 use crate::domain::{
     catalog::{AdminCategory, CatalogItem},
+    engines::{
+        ansible::AnsibleRunResult,
+        opentofu::{TofuApplyResult, TofuPlanResult, TofuState},
+    },
     errors::DomainError,
     orchestration::{JobId, OrchestrationJob, RollbackPolicy},
     registry::{AdminPackage, RegistryQuery, ServerProfilePreset},
@@ -20,8 +26,10 @@ use crate::ports::{
     inbound::repo_orchestrator::{RegisterRepoCommand, RepoOrchestratorPort},
     outbound::{
         admin_registry::AdminRegistryPort,
+        ansible_engine::AnsibleEnginePort,
         git_provider::GitProviderPort,
         job_store::JobStorePort,
+        opentofu_engine::OpenTofuEnginePort,
         repo_catalog::RepoCatalogPort,
         repo_store::RepoStorePort,
         server_executor::ServerExecutorPort,
@@ -39,6 +47,8 @@ pub struct OrchestrationService {
     catalog: Arc<dyn RepoCatalogPort>,
     stack_store: Arc<dyn StackStorePort>,
     registry: Arc<dyn AdminRegistryPort>,
+    tofu_engine: Arc<dyn OpenTofuEnginePort>,
+    ansible_engine: Arc<dyn AnsibleEnginePort>,
 }
 
 impl OrchestrationService {
@@ -91,6 +101,32 @@ impl OrchestrationService {
         stack_store: Arc<dyn StackStorePort>,
         registry: Arc<dyn AdminRegistryPort>,
     ) -> Self {
+        Self::new_with_engines(
+            server_store,
+            repo_store,
+            job_store,
+            executor,
+            git_provider,
+            catalog,
+            stack_store,
+            registry,
+            Arc::new(MockOpenTofuEngine::default()),
+            Arc::new(MockAnsibleEngine::default()),
+        )
+    }
+
+    pub fn new_with_engines(
+        server_store: Arc<dyn ServerStorePort>,
+        repo_store: Arc<dyn RepoStorePort>,
+        job_store: Arc<dyn JobStorePort>,
+        executor: Arc<dyn ServerExecutorPort>,
+        git_provider: Arc<dyn GitProviderPort>,
+        catalog: Arc<dyn RepoCatalogPort>,
+        stack_store: Arc<dyn StackStorePort>,
+        registry: Arc<dyn AdminRegistryPort>,
+        tofu_engine: Arc<dyn OpenTofuEnginePort>,
+        ansible_engine: Arc<dyn AnsibleEnginePort>,
+    ) -> Self {
         Self {
             server_store,
             repo_store,
@@ -100,7 +136,19 @@ impl OrchestrationService {
             catalog,
             stack_store,
             registry,
+            tofu_engine,
+            ansible_engine,
         }
+    }
+
+    pub fn with_tofu_engine(mut self, engine: Arc<dyn OpenTofuEnginePort>) -> Self {
+        self.tofu_engine = engine;
+        self
+    }
+
+    pub fn with_ansible_engine(mut self, engine: Arc<dyn AnsibleEnginePort>) -> Self {
+        self.ansible_engine = engine;
+        self
     }
 }
 
@@ -623,5 +671,67 @@ impl RepoOrchestratorPort for OrchestrationService {
             .await?;
 
         self.execute_stack(server_id, &stack.id()).await
+    }
+
+    async fn plan_tofu(
+        &self,
+        repo_id: &RepoId,
+        vars: HashMap<String, String>,
+    ) -> Result<TofuPlanResult, DomainError> {
+        let repo = self.get_repo(repo_id).await?;
+        let path = std::path::Path::new("/tmp").join(repo.name());
+        self.tofu_engine.init(&path).await?;
+        self.tofu_engine.plan(&path, vars).await
+    }
+
+    async fn apply_tofu(
+        &self,
+        repo_id: &RepoId,
+        vars: HashMap<String, String>,
+    ) -> Result<TofuApplyResult, DomainError> {
+        let repo = self.get_repo(repo_id).await?;
+        let path = std::path::Path::new("/tmp").join(repo.name());
+        self.tofu_engine.init(&path).await?;
+        self.tofu_engine.apply(&path, vars).await
+    }
+
+    async fn destroy_tofu(
+        &self,
+        repo_id: &RepoId,
+        vars: HashMap<String, String>,
+    ) -> Result<TofuApplyResult, DomainError> {
+        let repo = self.get_repo(repo_id).await?;
+        let path = std::path::Path::new("/tmp").join(repo.name());
+        self.tofu_engine.init(&path).await?;
+        self.tofu_engine.destroy(&path, vars).await
+    }
+
+    async fn get_tofu_state(&self, repo_id: &RepoId) -> Result<TofuState, DomainError> {
+        let repo = self.get_repo(repo_id).await?;
+        let path = std::path::Path::new("/tmp").join(repo.name());
+        self.tofu_engine.get_state(&path).await
+    }
+
+    async fn run_ansible_playbook(
+        &self,
+        server_id: &ServerId,
+        playbook: &str,
+        vars: HashMap<String, String>,
+    ) -> Result<AnsibleRunResult, DomainError> {
+        let server = self
+            .server_store
+            .find_by_id(server_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "Server",
+                id: server_id.to_string(),
+            })?;
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot run ansible playbook on offline server {}",
+                server_id
+            )));
+        }
+        self.ansible_engine.run_playbook(&server, playbook, vars).await
     }
 }

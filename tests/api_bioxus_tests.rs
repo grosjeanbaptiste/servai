@@ -987,6 +987,268 @@ async fn test_bioxus_api_registry_search_and_preset_installation() {
     assert_eq!(job_out["status"], "Succeeded");
 }
 
+#[tokio::test]
+async fn test_bioxus_api_opentofu_and_ansible_engine_endpoints() {
+    let app = setup_test_app();
+
+    // 1. Register OpenTofu repo
+    let repo_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/repos")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "tofu-infra-prod",
+                        "url": "https://github.com/infra/prod-cluster.git",
+                        "target_ref": { "Branch": "main" },
+                        "kind": "OpenTofu"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(repo_res.status(), StatusCode::CREATED);
+    let repo_json: Value = serde_json::from_slice(
+        &repo_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let repo_id = repo_json["id"].as_str().unwrap();
+
+    // 2. POST /api/v1/tofu/plan
+    let plan_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/tofu/plan")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "repo_id": repo_id,
+                        "vars": { "instance_count": "2" }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(plan_res.status(), StatusCode::OK);
+    let plan_json: Value = serde_json::from_slice(
+        &plan_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(plan_json["summary"]["to_add"], 2);
+    assert_eq!(plan_json["summary"]["to_change"], 0);
+    assert_eq!(plan_json["summary"]["to_destroy"], 0);
+
+    // 3. POST /api/v1/tofu/apply
+    let apply_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/tofu/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "repo_id": repo_id,
+                        "vars": { "instance_count": "2" }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(apply_res.status(), StatusCode::OK);
+    let apply_json: Value = serde_json::from_slice(
+        &apply_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(apply_json["success"], true);
+    assert_eq!(apply_json["resources_created"], 2);
+    assert_eq!(
+        apply_json["outputs"]["cluster_endpoint"],
+        "https://10.0.0.10:6443"
+    );
+
+    // 4. GET /api/v1/tofu/state/:repo_id
+    let state_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/tofu/state/{}", repo_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(state_res.status(), StatusCode::OK);
+    let state_json: Value = serde_json::from_slice(
+        &state_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(state_json["serial"], 1);
+    assert_eq!(state_json["lineage"], "mock-lineage-123");
+
+    // 5. POST /api/v1/tofu/destroy
+    let destroy_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/tofu/destroy")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "repo_id": repo_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(destroy_res.status(), StatusCode::OK);
+    let destroy_json: Value = serde_json::from_slice(
+        &destroy_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(destroy_json["success"], true);
+    assert_eq!(destroy_json["resources_deleted"], 2);
+
+    // 6. Register server and bring it online
+    let srv_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/servers")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "bioxus-node-ansible",
+                        "ip": "10.10.10.1",
+                        "port": 22,
+                        "credentials": "Agent",
+                        "tags": ["prod", "bioxus"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let srv_json: Value = serde_json::from_slice(
+        &srv_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let server_id = srv_json["id"].as_str().unwrap();
+
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/health", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 7. POST /api/v1/servers/:id/ansible/playbook
+    let pb_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/ansible/playbook", server_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "playbook": "site.yml",
+                        "vars": { "env": "production" }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(pb_res.status(), StatusCode::OK);
+    let pb_json: Value = serde_json::from_slice(
+        &pb_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(pb_json["ok_count"], 3);
+    assert_eq!(pb_json["changed_count"], 1);
+    assert_eq!(pb_json["failed_count"], 0);
+
+    // 8. POST /api/v1/servers/:id/ansible/module
+    let mod_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/ansible/module", server_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "module": "command",
+                        "args": "uptime"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(mod_res.status(), StatusCode::OK);
+    let mod_json: Value = serde_json::from_slice(
+        &mod_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(mod_json["module"], "command");
+    assert_eq!(mod_json["changed"], true);
+    assert_eq!(mod_json["rc"], 0);
+
+    // 9. GET /api/v1/servers/:id/ansible/facts
+    let facts_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/servers/{}/ansible/facts", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(facts_res.status(), StatusCode::OK);
+    let facts_json: Value = serde_json::from_slice(
+        &facts_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(facts_json["distribution"], "Ubuntu");
+    assert_eq!(facts_json["distribution_version"], "22.04");
+    assert_eq!(facts_json["memtotal_mb"], 8192);
+}
+
 
 
 

@@ -70,20 +70,21 @@ Lorsqu'un dépôt d'administration est sélectionné (ex: `linuxserver-wireguard
 
 ---
 
-## 🧪 Tests TDD (45/45 Passing - 100% Couverture)
+## 🧪 Tests TDD (53/53 Passing - 100% Couverture)
 
 Pour exécuter l'ensemble des suites de tests TDD :
 ```bash
 cargo test
 ```
 
-### Découpage des 6 suites de tests :
+### Découpage des 7 suites de tests :
 - **`tests/domain_tests.rs` (13 tests)** : Cycle de vie, verrous de concurrence, validation, métriques, rollback, dérive.
 - **`tests/catalog_tests.rs` (2 tests)** : Validations du catalogue, compatibilité OS des recettes.
 - **`tests/inspector_and_stack_tests.rs` (3 tests)** : Manifestes de détection d'administration, composition multi-dépôts, compilation des étapes.
 - **`tests/registry_tests.rs` (3 tests)** : Résolution de dépendances entre dépôts, requêtes de recherche multi-critères, profils prédéfinis.
-- **`tests/application_tests.rs` (15 tests)** : Administration, healthchecks, services systemd, métriques, reboot, rollback automatique, dérive, navigation et import catalogue, application directe de recettes, exécution de stacks, recherche dans le registre, installation avec dépendances automatiques, déploiement de profils complets.
-- **`tests/api_bioxus_tests.rs` (9 tests)** : Contrats REST complets pour l'UI Bioxus (200, 201, 400, 404, 409, catalogue, recettes, stacks, recherche registre, déploiement de presets).
+- **`tests/engine_tests.rs` (4 tests)** : Moteurs d'exécution OpenTofu (plan, apply, state, summary) et Ansible (playbooks, task events, module runner, facts gathering).
+- **`tests/application_tests.rs` (18 tests)** : Administration, healthchecks, services systemd, métriques, reboot, rollback automatique, dérive, navigation et import catalogue, application directe de recettes, exécution de stacks, recherche dans le registre, installation avec dépendances automatiques, déploiement de profils complets, orchestration OpenTofu (plan, apply, destroy, state), exécution Ansible (playbook, module ad-hoc, inventaire et faits).
+- **`tests/api_bioxus_tests.rs` (10 tests)** : Contrats REST complets pour l'UI Bioxus (200, 201, 400, 404, 409, catalogue, recettes, stacks, recherche registre, déploiement de presets, API OpenTofu et Ansible).
 
 ---
 
@@ -101,6 +102,13 @@ cargo test
 | `GET` | `/api/v1/servers/:id/metrics` | Métriques temps réel (CPU, RAM, Disque, Uptime) |
 | `POST` | `/api/v1/servers/:id/services/:service/action` | Gérer un service (`Start`, `Stop`, `Restart`, `Reload`, `Status`) |
 | `POST` | `/api/v1/servers/:id/reboot` | Déclencher le redémarrage du serveur |
+| `POST` | `/api/v1/servers/:id/ansible/playbook` | **Exécuter un playbook Ansible avec variables dynamiques** |
+| `POST` | `/api/v1/servers/:id/ansible/module` | **Exécuter une commande/module ad-hoc Ansible** |
+| `GET` | `/api/v1/servers/:id/ansible/facts` | **Collecter les faits matériels et système Ansible du serveur** |
+| `POST` | `/api/v1/tofu/plan` | **Calculer un plan d'infrastructure OpenTofu** |
+| `POST` | `/api/v1/tofu/apply` | **Appliquer une configuration OpenTofu (auto-approve)** |
+| `POST` | `/api/v1/tofu/destroy` | **Détruire les ressources gérées par OpenTofu** |
+| `GET` | `/api/v1/tofu/state/:repo_id` | **Inspecter l'état (State/Lineage) OpenTofu en JSON** |
 | `GET` | `/api/v1/registry/search` | **Recherche dans l'écosystème de dépôts (Galaxy, LinuxServer, GitHub)** |
 | `GET` | `/api/v1/registry/presets` | **Lister les profils de serveur complets (Presets multi-dépôts)** |
 | `POST` | `/api/v1/servers/:id/packages/:package_id/install` | **Installer un dépôt avec résolution automatique de ses dépendances** |
@@ -111,7 +119,7 @@ cargo test
 | `POST` | `/api/v1/catalog/:id/import` | Importer un dépôt du catalogue dans Servai |
 | `POST` | `/api/v1/stacks` | Créer un stack combinant plusieurs dépôts existants |
 | `GET` | `/api/v1/stacks` | Lister les stacks multi-dépôts configurés |
-| `POST` | `/api/v1/repos` | Enregistrer un dépôt existant personnalisé |
+| `POST` | `/api/v1/repos` | Enregistrer un dépôt existant personnalisé (Ansible, Docker Compose, OpenTofu, etc.) |
 | `GET` | `/api/v1/repos` | Lister les dépôts orchestrés |
 | `POST` | `/api/v1/repos/:id/sync` | Synchroniser le dépôt Git |
 | `POST` | `/api/v1/orchestrations` | Déclencher l'orchestration sur un serveur |

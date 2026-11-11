@@ -4,6 +4,10 @@ use std::collections::HashMap;
 
 use crate::domain::{
     catalog::{AdminCategory, CatalogItem},
+    engines::{
+        ansible::AnsibleRunResult,
+        opentofu::{TofuApplyResult, TofuPlanResult, TofuState},
+    },
     errors::DomainError,
     orchestration::{JobId, OrchestrationJob, RollbackPolicy},
     registry::{AdminPackage, RegistryQuery, ServerProfilePreset},
@@ -94,4 +98,30 @@ pub trait RepoOrchestratorPort: Send + Sync {
         server_id: &ServerId,
         preset_id: &str,
     ) -> Result<OrchestrationJob, DomainError>;
+
+    // OpenTofu orchestration
+    async fn plan_tofu(
+        &self,
+        repo_id: &RepoId,
+        vars: HashMap<String, String>,
+    ) -> Result<TofuPlanResult, DomainError>;
+    async fn apply_tofu(
+        &self,
+        repo_id: &RepoId,
+        vars: HashMap<String, String>,
+    ) -> Result<TofuApplyResult, DomainError>;
+    async fn destroy_tofu(
+        &self,
+        repo_id: &RepoId,
+        vars: HashMap<String, String>,
+    ) -> Result<TofuApplyResult, DomainError>;
+    async fn get_tofu_state(&self, repo_id: &RepoId) -> Result<TofuState, DomainError>;
+
+    // Ansible Playbook orchestration
+    async fn run_ansible_playbook(
+        &self,
+        server_id: &ServerId,
+        playbook: &str,
+        vars: HashMap<String, String>,
+    ) -> Result<AnsibleRunResult, DomainError>;
 }

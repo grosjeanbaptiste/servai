@@ -1,4 +1,5 @@
 pub mod catalog_handlers;
+pub mod engine_handlers;
 pub mod error_response;
 pub mod orchestration_handlers;
 pub mod registry_handlers;

@@ -108,6 +108,16 @@ impl HostAddress {
     }
 }
 
+impl std::fmt::Display for HostAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.port == 22 {
+            write!(f, "{}", self.ip_or_host)
+        } else {
+            write!(f, "{}:{}", self.ip_or_host, self.port)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SshCredentials {
     Agent,

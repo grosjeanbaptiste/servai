@@ -122,6 +122,11 @@ impl GitProviderPort for GitCliProvider {
                 OrchestrationStep::new("rsync_configs", "rsync -avz ./ /etc/servai/"),
                 OrchestrationStep::new("reload_services", "systemctl reload-or-restart servai-services"),
             ]),
+            RepoKind::OpenTofu => Ok(vec![
+                OrchestrationStep::new("opentofu_init", "tofu init -no-color"),
+                OrchestrationStep::new("opentofu_plan", "tofu plan -no-color"),
+                OrchestrationStep::new("opentofu_apply", "tofu apply -auto-approve -no-color"),
+            ]),
         }
     }
 

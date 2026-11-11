@@ -45,6 +45,7 @@ pub enum RepoKind {
     DockerCompose,
     ShellManifest,
     RawConfig,
+    OpenTofu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +92,7 @@ pub enum DetectedAdminType {
     ShellProvisioner,
     SystemdUnits,
     RawConfiguration,
+    OpenTofuModule,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

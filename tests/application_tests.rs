@@ -666,5 +666,142 @@ async fn test_orchestration_service_apply_profile_preset() {
     assert_eq!(job.steps().len(), 3);
 }
 
+#[tokio::test]
+async fn test_orchestration_service_opentofu_plan_apply_destroy_and_state() {
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let orchestrator = OrchestrationService::new(
+        server_store.clone(),
+        repo_store.clone(),
+        job_store.clone(),
+        executor.clone(),
+        git.clone(),
+    );
+
+    let repo = orchestrator
+        .register_repo(RegisterRepoCommand {
+            name: "infra-cluster".to_string(),
+            url: "https://github.com/org/infra-cluster.git".to_string(),
+            target_ref: GitRef::Branch("main".to_string()),
+            kind: RepoKind::OpenTofu,
+        })
+        .await
+        .unwrap();
+
+    let mut vars = HashMap::new();
+    vars.insert("node_count".to_string(), "2".to_string());
+
+    // 1. Plan
+    let plan = orchestrator.plan_tofu(&repo.id(), vars.clone()).await.unwrap();
+    assert_eq!(plan.summary().to_add, 2);
+    assert_eq!(plan.summary().to_change, 0);
+    assert_eq!(plan.summary().to_destroy, 0);
+    assert_eq!(plan.resources().len(), 2);
+
+    // 2. Apply
+    let apply = orchestrator.apply_tofu(&repo.id(), vars.clone()).await.unwrap();
+    assert!(apply.is_success());
+    assert_eq!(apply.resources_created(), 2);
+    assert_eq!(
+        apply.outputs().get("cluster_endpoint").unwrap(),
+        "https://10.0.0.10:6443"
+    );
+
+    // 3. State
+    let state = orchestrator.get_tofu_state(&repo.id()).await.unwrap();
+    assert_eq!(state.serial(), 1);
+    assert_eq!(state.lineage(), "mock-lineage-123");
+    assert_eq!(state.resources().len(), 2);
+
+    // 4. Destroy
+    let destroy = orchestrator.destroy_tofu(&repo.id(), vars).await.unwrap();
+    assert!(destroy.is_success());
+    assert_eq!(destroy.resources_deleted(), 2);
+}
+
+#[tokio::test]
+async fn test_orchestration_service_ansible_playbook() {
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let repo_store = Arc::new(InMemoryRepoStore::default());
+    let job_store = Arc::new(InMemoryJobStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let git = Arc::new(MockGitProvider::default());
+
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+    let orchestrator = OrchestrationService::new(
+        server_store.clone(),
+        repo_store.clone(),
+        job_store.clone(),
+        executor.clone(),
+        git.clone(),
+    );
+
+    let server = server_service
+        .register_server(RegisterServerCommand {
+            name: "ansible-target".to_string(),
+            ip: "10.0.0.99".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    server_service.health_check(&server.id()).await.unwrap();
+
+    let mut vars = HashMap::new();
+    vars.insert("app_port".to_string(), "8080".to_string());
+
+    let result = orchestrator
+        .run_ansible_playbook(&server.id(), "site.yml", vars)
+        .await
+        .unwrap();
+
+    assert!(result.is_successful());
+    assert_eq!(result.ok_count(), 3);
+    assert_eq!(result.changed_count(), 1);
+    assert_eq!(result.failed_count(), 0);
+    assert_eq!(result.task_events().len(), 3);
+}
+
+#[tokio::test]
+async fn test_server_service_ansible_module_and_facts() {
+    let server_store = Arc::new(InMemoryServerStore::default());
+    let executor = Arc::new(MockServerExecutor::default());
+    let server_service = ServerService::new(server_store.clone(), executor.clone());
+
+    let server = server_service
+        .register_server(RegisterServerCommand {
+            name: "ansible-adhoc-node".to_string(),
+            ip: "10.0.0.100".to_string(),
+            port: 22,
+            credentials: SshCredentials::Agent,
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+    server_service.health_check(&server.id()).await.unwrap();
+
+    // Ad-hoc module execution
+    let module_res = server_service
+        .run_ansible_module(&server.id(), "command", "uptime")
+        .await
+        .unwrap();
+    assert!(module_res.is_success());
+    assert!(module_res.changed);
+    assert_eq!(module_res.module, "command");
+
+    // Fact gathering
+    let facts = server_service.gather_ansible_facts(&server.id()).await.unwrap();
+    assert_eq!(facts.distribution, "Ubuntu");
+    assert_eq!(facts.distribution_version, "22.04");
+    assert_eq!(facts.memtotal_mb, 8192);
+    assert!(facts.interfaces.contains(&"eth0".to_string()));
+}
+
+
 
 

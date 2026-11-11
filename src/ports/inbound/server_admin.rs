@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
+    engines::ansible::{AnsibleFacts, AnsibleModuleResult},
     errors::DomainError,
     server::{Server, ServerId, ServerMetrics, ServerStatus, ServiceAction, ServiceStatus, SshCredentials},
 };
@@ -32,4 +33,11 @@ pub trait ServerAdminPort: Send + Sync {
     ) -> Result<ServiceStatus, DomainError>;
     async fn get_metrics(&self, id: &ServerId) -> Result<ServerMetrics, DomainError>;
     async fn reboot_server(&self, id: &ServerId) -> Result<(), DomainError>;
+    async fn run_ansible_module(
+        &self,
+        id: &ServerId,
+        module: &str,
+        args: &str,
+    ) -> Result<AnsibleModuleResult, DomainError>;
+    async fn gather_ansible_facts(&self, id: &ServerId) -> Result<AnsibleFacts, DomainError>;
 }

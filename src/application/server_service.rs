@@ -2,13 +2,16 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 pub use crate::ports::inbound::server_admin::RegisterServerCommand;
+use crate::adapters::outbound::ansible::MockAnsibleEngine;
 use crate::domain::{
+    engines::ansible::{AnsibleFacts, AnsibleModuleResult},
     errors::DomainError,
     server::{HostAddress, Server, ServerId, ServerMetrics, ServerName, ServerStatus, ServiceAction, ServiceStatus},
 };
 use crate::ports::{
     inbound::server_admin::ServerAdminPort,
     outbound::{
+        ansible_engine::AnsibleEnginePort,
         server_executor::{CommandResult, ServerExecutorPort},
         server_store::ServerStorePort,
     },
@@ -17,6 +20,7 @@ use crate::ports::{
 pub struct ServerService {
     server_store: Arc<dyn ServerStorePort>,
     executor: Arc<dyn ServerExecutorPort>,
+    ansible_engine: Arc<dyn AnsibleEnginePort>,
 }
 
 impl ServerService {
@@ -24,9 +28,22 @@ impl ServerService {
         server_store: Arc<dyn ServerStorePort>,
         executor: Arc<dyn ServerExecutorPort>,
     ) -> Self {
+        Self::new_with_ansible(
+            server_store,
+            executor,
+            Arc::new(MockAnsibleEngine::default()),
+        )
+    }
+
+    pub fn new_with_ansible(
+        server_store: Arc<dyn ServerStorePort>,
+        executor: Arc<dyn ServerExecutorPort>,
+        ansible_engine: Arc<dyn AnsibleEnginePort>,
+    ) -> Self {
         Self {
             server_store,
             executor,
+            ansible_engine,
         }
     }
 }
@@ -143,5 +160,32 @@ impl ServerAdminPort for ServerService {
         server.transition_to(ServerStatus::Maintenance)?;
         self.server_store.save(server).await?;
         Ok(())
+    }
+
+    async fn run_ansible_module(
+        &self,
+        id: &ServerId,
+        module: &str,
+        args: &str,
+    ) -> Result<AnsibleModuleResult, DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot run ansible module on offline server {}",
+                id
+            )));
+        }
+        self.ansible_engine.run_module(&server, module, args).await
+    }
+
+    async fn gather_ansible_facts(&self, id: &ServerId) -> Result<AnsibleFacts, DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot gather ansible facts on offline server {}",
+                id
+            )));
+        }
+        self.ansible_engine.gather_facts(&server).await
     }
 }

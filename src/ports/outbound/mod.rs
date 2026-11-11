@@ -1,6 +1,8 @@
 pub mod admin_registry;
+pub mod ansible_engine;
 pub mod git_provider;
 pub mod job_store;
+pub mod opentofu_engine;
 pub mod repo_catalog;
 pub mod repo_store;
 pub mod server_executor;

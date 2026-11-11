@@ -7,6 +7,11 @@ use std::sync::Arc;
 
 use crate::adapters::inbound::http::{
     catalog_handlers::{apply_recipe, import_catalog_item, list_catalog},
+    engine_handlers::{
+        apply_tofu_handler, destroy_tofu_handler, gather_ansible_facts_handler,
+        get_tofu_state_handler, plan_tofu_handler, run_ansible_module_handler,
+        run_ansible_playbook_handler,
+    },
     orchestration_handlers::{
         cancel_orchestration, detect_drift_handler, get_orchestration, trigger_orchestration,
     },
@@ -89,5 +94,23 @@ pub fn create_router(
         .route("/api/v1/orchestrations/{id}", get(get_orchestration))
         .route("/api/v1/orchestrations/{id}/cancel", post(cancel_orchestration))
         .route("/api/v1/orchestrations/drift", post(detect_drift_handler))
+        // OpenTofu orchestration routes (for Bioxus)
+        .route("/api/v1/tofu/plan", post(plan_tofu_handler))
+        .route("/api/v1/tofu/apply", post(apply_tofu_handler))
+        .route("/api/v1/tofu/destroy", post(destroy_tofu_handler))
+        .route("/api/v1/tofu/state/{repo_id}", get(get_tofu_state_handler))
+        // Ansible execution routes (for Bioxus)
+        .route(
+            "/api/v1/servers/{id}/ansible/playbook",
+            post(run_ansible_playbook_handler),
+        )
+        .route(
+            "/api/v1/servers/{id}/ansible/module",
+            post(run_ansible_module_handler),
+        )
+        .route(
+            "/api/v1/servers/{id}/ansible/facts",
+            get(gather_ansible_facts_handler),
+        )
         .with_state(state)
 }
