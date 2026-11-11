@@ -1,10 +1,13 @@
 pub mod ansible;
 pub mod catalog;
 pub mod crossplane;
+pub mod dns;
 pub mod git;
 pub mod memory;
 pub mod mock;
 pub mod opentofu;
+pub mod registrar;
 pub mod registry;
 pub mod system;
+pub mod tls;
 pub mod wireguard;

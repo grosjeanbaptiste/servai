@@ -1,8 +1,11 @@
 pub mod catalog;
+pub mod dns;
 pub mod engines;
 pub mod errors;
 pub mod orchestration;
+pub mod registrar;
 pub mod registry;
 pub mod repository;
 pub mod server;
 pub mod stack;
+pub mod tls;

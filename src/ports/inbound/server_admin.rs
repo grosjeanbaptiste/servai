@@ -8,6 +8,7 @@ use crate::domain::{
     },
     errors::DomainError,
     server::{Server, ServerId, ServerMetrics, ServerStatus, ServiceAction, ServiceStatus, SshCredentials},
+    tls::TlsCertificate,
 };
 use crate::ports::outbound::server_executor::CommandResult;
 
@@ -73,4 +74,11 @@ pub trait ServerAdminPort: Send + Sync {
         iface_name: &str,
     ) -> Result<Vec<WireGuardPeer>, DomainError>;
     async fn generate_wireguard_keypair(&self) -> Result<(String, String), DomainError>;
+
+    // Unified Server + DNS + SSL Domain binding
+    async fn bind_server_domain(
+        &self,
+        id: &ServerId,
+        domain: &str,
+    ) -> Result<TlsCertificate, DomainError>;
 }

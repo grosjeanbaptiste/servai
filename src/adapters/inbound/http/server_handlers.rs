@@ -18,6 +18,8 @@ use crate::ports::outbound::server_executor::CommandResult;
 pub struct AppState {
     pub server_service: Arc<dyn ServerAdminPort>,
     pub orchestrator_service: Arc<dyn crate::ports::inbound::repo_orchestrator::RepoOrchestratorPort>,
+    pub dns_service: Arc<dyn crate::ports::inbound::dns_admin::DnsAdminPort>,
+    pub registrar_service: Arc<dyn crate::ports::inbound::registrar_admin::RegistrarAdminPort>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,4 +158,19 @@ pub async fn reboot_server(
         .reboot_server(&ServerId::from_uuid(id))
         .await?;
     Ok(StatusCode::OK)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BindDomainRequest {
+    pub domain: String,
+}
+
+pub async fn bind_server_domain_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<BindDomainRequest>,
+) -> Result<(StatusCode, Json<crate::domain::tls::TlsCertificate>), ApiError> {
+    let server_id = ServerId::from_uuid(id);
+    let cert = state.server_service.bind_server_domain(&server_id, &payload.domain).await?;
+    Ok((StatusCode::CREATED, Json(cert)))
 }

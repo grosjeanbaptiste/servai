@@ -1575,6 +1575,296 @@ async fn test_bioxus_api_wireguard_endpoints() {
     );
 }
 
+#[tokio::test]
+async fn test_bioxus_api_dns_and_registrar_endpoints() {
+    let app = setup_test_app();
+
+    // 1. Check domain availability (GET /api/v1/domains/check)
+    let check_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/domains/check?domain=bioxus-platform.org")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(check_res.status(), StatusCode::OK);
+    let check_json: Value = serde_json::from_slice(
+        &check_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(check_json["domain"], "bioxus-platform.org");
+    assert_eq!(check_json["available"], true);
+
+    // 2. Register a domain (POST /api/v1/domains)
+    let register_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/domains")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "domain": "bioxus-platform.org",
+                        "provider": "Cloudflare",
+                        "contact_name": "DevOps Lead",
+                        "contact_email": "ops@bioxus.org",
+                        "contact_phone": "+33123456789",
+                        "contact_city": "Paris",
+                        "contact_country": "France",
+                        "nameservers": ["ns1.cloudflare.com", "ns2.cloudflare.com"],
+                        "auto_renew": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(register_res.status(), StatusCode::CREATED);
+    let reg_json: Value = serde_json::from_slice(
+        &register_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(reg_json["domain"], "bioxus-platform.org");
+    assert_eq!(reg_json["status"], "Active");
+    assert_eq!(reg_json["auto_renew"], true);
+
+    // 3. Update Nameservers (PUT /api/v1/domains/:domain/nameservers)
+    let ns_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/domains/bioxus-platform.org/nameservers")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "nameservers": ["ns1.custom-dns.io", "ns2.custom-dns.io"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(ns_res.status(), StatusCode::OK);
+
+    // 4. Toggle Auto-Renew (PUT /api/v1/domains/:domain/auto-renew)
+    let renew_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/domains/bioxus-platform.org/auto-renew")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "enable": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(renew_res.status(), StatusCode::OK);
+
+    // Verify domain updated state via GET /api/v1/domains/:domain
+    let get_dom_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/domains/bioxus-platform.org")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(get_dom_res.status(), StatusCode::OK);
+    let get_dom_json: Value = serde_json::from_slice(
+        &get_dom_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        get_dom_json["nameservers"]["servers"][0],
+        "ns1.custom-dns.io"
+    );
+    assert_eq!(get_dom_json["auto_renew"], false);
+
+    // 5. Create DNS Zone (POST /api/v1/dns/zones)
+    let zone_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/dns/zones")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "domain": "bioxus-platform.org",
+                        "enable_dnssec": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(zone_res.status(), StatusCode::CREATED);
+    let zone_json: Value = serde_json::from_slice(
+        &zone_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(zone_json["domain"], "bioxus-platform.org");
+    assert_eq!(zone_json["dnssec_status"], "Enabled");
+
+    // 6. Upsert DNS A-Record (POST /api/v1/dns/zones/:domain/records)
+    let record_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/dns/zones/bioxus-platform.org/records")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "api",
+                        "record_type": "A",
+                        "value": "198.51.100.25",
+                        "ttl_seconds": 300
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(record_res.status(), StatusCode::CREATED);
+    let record_json: Value = serde_json::from_slice(
+        &record_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let record_id = record_json["id"].as_str().unwrap().to_string();
+    assert_eq!(record_json["name"], "api");
+    assert_eq!(record_json["record_type"], "A");
+    assert_eq!(record_json["value"], "198.51.100.25");
+
+    // 7. Verify DNS Propagation (GET /api/v1/dns/zones/:domain/propagate)
+    let prop_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/dns/zones/bioxus-platform.org/propagate?record_type=A&expected_value=198.51.100.25")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(prop_res.status(), StatusCode::OK);
+    let prop_json: Value = serde_json::from_slice(
+        &prop_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(prop_json["domain"], "bioxus-platform.org");
+    assert_eq!(prop_json["propagated"], true);
+
+    // 8. Delete DNS Record (DELETE /api/v1/dns/zones/:domain/records/:id)
+    let del_rec_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!(
+                    "/api/v1/dns/zones/bioxus-platform.org/records/{}",
+                    record_id
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(del_rec_res.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn test_bioxus_api_bind_server_domain_and_auto_tls() {
+    let app = setup_test_app();
+
+    // 1. Register a server
+    let reg_server_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/servers")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "prod-app-server",
+                        "ip": "203.0.113.88",
+                        "port": 22,
+                        "credentials": "Agent"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(reg_server_res.status(), StatusCode::CREATED);
+    let server_json: Value = serde_json::from_slice(
+        &reg_server_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let server_id = server_json["id"].as_str().unwrap();
+
+    // 2. Bind server to domain (POST /api/v1/servers/:id/bind-domain)
+    let bind_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/bind-domain", server_id))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "domain": "app.bioxus.cloud"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(bind_res.status(), StatusCode::CREATED);
+    let cert_json: Value = serde_json::from_slice(
+        &bind_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(cert_json["primary_domain"], "app.bioxus.cloud");
+    assert_eq!(cert_json["status"], "Valid");
+    assert_eq!(cert_json["challenge_type"], "Dns01");
+    assert_eq!(cert_json["days_remaining"], 90);
+}
+
 
 
 

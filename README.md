@@ -70,21 +70,22 @@ Lorsqu'un dépôt d'administration est sélectionné (ex: `linuxserver-wireguard
 
 ---
 
-## 🧪 Tests TDD (62/62 Passing - 100% Couverture)
+## 🧪 Tests TDD (71/71 Passing - 100% Couverture)
 
 Pour exécuter l'ensemble des suites de tests TDD :
 ```bash
 cargo test
 ```
 
-### Découpage des 7 suites de tests :
+### Découpage des 8 suites de tests :
 - **`tests/domain_tests.rs` (13 tests)** : Cycle de vie, verrous de concurrence, validation, métriques, rollback, dérive.
 - **`tests/catalog_tests.rs` (2 tests)** : Validations du catalogue, compatibilité OS des recettes.
 - **`tests/inspector_and_stack_tests.rs` (3 tests)** : Manifestes de détection d'administration, composition multi-dépôts, compilation des étapes.
 - **`tests/registry_tests.rs` (3 tests)** : Résolution de dépendances entre dépôts, requêtes de recherche multi-critères, profils prédéfinis.
 - **`tests/engine_tests.rs` (8 tests)** : Moteurs d'exécution OpenTofu (plan, apply, state, summary), Ansible (playbooks, task events, module runner, facts gathering), Crossplane (claims, conditions, XRD, managed resources) et WireGuard (interfaces wg-quick, pairs cryptographiques, pair keepalive, device status).
+- **`tests/dns_and_registrar_tests.rs` (7 tests)** : Enregistrement de noms de domaine auprès des registrars (Cloudflare, OVH, Gandi, Namecheap, Route53, Porkbun), configuration des serveurs DNS (nameservers), gestion des zones DNS et enregistrements (A, AAAA, CNAME, MX, TXT, SRV, CAA), validation du TTL et DNSSEC, propagation DNS, cycle de vie des certificats TLS/ACME (DNS-01, HTTP-01), et liaison unifiée domaine-serveur avec auto-provisioning SSL (`bind_server_domain`).
 - **`tests/application_tests.rs` (22 tests)** : Administration, healthchecks, services systemd, métriques, reboot, rollback automatique, dérive, navigation et import catalogue, application directe de recettes, exécution de stacks, recherche dans le registre, installation avec dépendances automatiques, déploiement de profils complets, orchestration OpenTofu (plan, apply, destroy, state), exécution Ansible (playbook, module ad-hoc, inventaire et faits), orchestration Crossplane (claims, status, providers, managed resources), gestion WireGuard (configuration interface, ajout/suppression de pairs, monitoring du trafic, génération de clés).
-- **`tests/api_bioxus_tests.rs` (12 tests)** : Contrats REST complets pour l'UI Bioxus (200, 201, 400, 404, 409, catalogue, recettes, stacks, recherche registre, déploiement de presets, API OpenTofu, Ansible, Crossplane et WireGuard).
+- **`tests/api_bioxus_tests.rs` (14 tests)** : Contrats REST complets pour l'UI Bioxus (200, 201, 204, 400, 404, 409, 422, catalogue, recettes, stacks, recherche registre, déploiement de presets, API OpenTofu, Ansible, Crossplane, WireGuard, Registrar, DNS et Server-Domain Binding avec auto-SSL).
 
 ---
 
@@ -102,6 +103,19 @@ cargo test
 | `GET` | `/api/v1/servers/:id/metrics` | Métriques temps réel (CPU, RAM, Disque, Uptime) |
 | `POST` | `/api/v1/servers/:id/services/:service/action` | Gérer un service (`Start`, `Stop`, `Restart`, `Reload`, `Status`) |
 | `POST` | `/api/v1/servers/:id/reboot` | Déclencher le redémarrage du serveur |
+| `POST` | `/api/v1/servers/:id/bind-domain` | **Lier un domaine au serveur, créer le record DNS A et délivrer le certificat TLS Let's Encrypt (Auto-SSL)** |
+| `GET` | `/api/v1/domains/check?domain=:name` | **Vérifier la disponibilité et le prix d'un nom de domaine auprès du Registrar** |
+| `POST` | `/api/v1/domains` | **Acheter / Enregistrer un nom de domaine (Cloudflare, OVH, Gandi, Namecheap, Route53, Porkbun)** |
+| `GET` | `/api/v1/domains` | **Lister les noms de domaine gérés** |
+| `GET` | `/api/v1/domains/:domain` | **Détails d'enregistrement d'un domaine** |
+| `PUT` | `/api/v1/domains/:domain/nameservers` | **Mettre à jour les serveurs de noms (Nameservers) du domaine** |
+| `PUT` | `/api/v1/domains/:domain/auto-renew` | **Activer ou désactiver le renouvellement automatique du domaine** |
+| `POST` | `/api/v1/dns/zones` | **Créer une zone DNS avec ou sans DNSSEC** |
+| `GET` | `/api/v1/dns/zones` | **Lister les zones DNS** |
+| `GET` | `/api/v1/dns/zones/:domain` | **Inspecter une zone DNS et tous ses enregistrements** |
+| `POST` | `/api/v1/dns/zones/:domain/records` | **Créer / Mettre à jour un enregistrement DNS (A, AAAA, CNAME, MX, TXT, etc.)** |
+| `DELETE` | `/api/v1/dns/zones/:domain/records/:id` | **Supprimer un enregistrement DNS** |
+| `GET` | `/api/v1/dns/zones/:domain/propagate` | **Vérifier en temps réel la propagation mondiale d'un enregistrement DNS** |
 | `POST` | `/api/v1/servers/:id/wireguard` | **Configurer une interface WireGuard (`wg0`) et ses pairs** |
 | `GET` | `/api/v1/servers/:id/wireguard/:iface/status` | **Statut, pairs actifs et métriques réseau Rx/Tx WireGuard** |
 | `GET` | `/api/v1/servers/:id/wireguard/:iface/peers` | **Lister les pairs VPN autorisés sur l'interface** |

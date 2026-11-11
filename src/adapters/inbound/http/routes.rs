@@ -1,5 +1,5 @@
 use axum::{
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde_json::{json, Value};
@@ -7,6 +7,10 @@ use std::sync::Arc;
 
 use crate::adapters::inbound::http::{
     catalog_handlers::{apply_recipe, import_catalog_item, list_catalog},
+    dns_handlers::{
+        create_dns_zone_handler, delete_dns_record_handler, get_dns_zone_handler,
+        list_dns_zones_handler, upsert_dns_record_handler, verify_dns_propagation_handler,
+    },
     engine_handlers::{
         add_wireguard_peer_handler, apply_crossplane_claim_handler, apply_tofu_handler,
         configure_wireguard_handler, delete_crossplane_claim_handler, destroy_tofu_handler,
@@ -19,17 +23,24 @@ use crate::adapters::inbound::http::{
     orchestration_handlers::{
         cancel_orchestration, detect_drift_handler, get_orchestration, trigger_orchestration,
     },
+    registrar_handlers::{
+        check_availability_handler, get_domain_handler, list_domains_handler,
+        register_domain_handler, set_auto_renew_handler, update_nameservers_handler,
+    },
     registry_handlers::{
         apply_preset_handler, install_package_handler, list_presets_handler, search_registry_handler,
     },
     repo_handlers::{get_repo, list_repos, register_repo, sync_repo},
     server_handlers::{
-        execute_on_server, get_server, get_server_metrics, health_check_server, list_servers,
-        manage_service, reboot_server, register_server, set_server_maintenance, AppState,
+        bind_server_domain_handler, execute_on_server, get_server, get_server_metrics,
+        health_check_server, list_servers, manage_service, reboot_server, register_server,
+        set_server_maintenance, AppState,
     },
     stack_handlers::{create_stack, execute_stack_handler, list_stacks},
 };
 use crate::ports::inbound::{
+    dns_admin::DnsAdminPort,
+    registrar_admin::RegistrarAdminPort,
     repo_orchestrator::RepoOrchestratorPort,
     server_admin::ServerAdminPort,
 };
@@ -46,9 +57,29 @@ pub fn create_router(
     server_service: Arc<dyn ServerAdminPort>,
     orchestrator_service: Arc<dyn RepoOrchestratorPort>,
 ) -> Router {
+    create_router_full(
+        server_service,
+        orchestrator_service,
+        Arc::new(crate::application::dns_service::DnsService::new(
+            Arc::new(crate::adapters::outbound::dns::MockDnsProvider::default()),
+        )),
+        Arc::new(crate::application::registrar_service::RegistrarService::new(
+            Arc::new(crate::adapters::outbound::registrar::MockRegistrarProvider::default()),
+        )),
+    )
+}
+
+pub fn create_router_full(
+    server_service: Arc<dyn ServerAdminPort>,
+    orchestrator_service: Arc<dyn RepoOrchestratorPort>,
+    dns_service: Arc<dyn DnsAdminPort>,
+    registrar_service: Arc<dyn RegistrarAdminPort>,
+) -> Router {
     let state = AppState {
         server_service,
         orchestrator_service,
+        dns_service,
+        registrar_service,
     };
 
     Router::new()
@@ -150,6 +181,29 @@ pub fn create_router(
         .route(
             "/api/v1/wireguard/keypair",
             post(generate_wireguard_keypair_handler),
+        )
+        // Domain Registrar orchestration routes (for Bioxus)
+        .route("/api/v1/domains/check", get(check_availability_handler))
+        .route("/api/v1/domains", post(register_domain_handler).get(list_domains_handler))
+        .route("/api/v1/domains/{domain}", get(get_domain_handler))
+        .route("/api/v1/domains/{domain}/nameservers", put(update_nameservers_handler))
+        .route("/api/v1/domains/{domain}/auto-renew", put(set_auto_renew_handler))
+        // DNS Zone and Record management routes (for Bioxus)
+        .route("/api/v1/dns/zones", post(create_dns_zone_handler).get(list_dns_zones_handler))
+        .route("/api/v1/dns/zones/{domain}", get(get_dns_zone_handler))
+        .route("/api/v1/dns/zones/{domain}/records", post(upsert_dns_record_handler))
+        .route(
+            "/api/v1/dns/zones/{domain}/records/{record_id}",
+            axum::routing::delete(delete_dns_record_handler),
+        )
+        .route(
+            "/api/v1/dns/zones/{domain}/propagate",
+            get(verify_dns_propagation_handler),
+        )
+        // Domain binding & TLS orchestration for Servers (for Bioxus)
+        .route(
+            "/api/v1/servers/{id}/bind-domain",
+            post(bind_server_domain_handler),
         )
         .with_state(state)
 }

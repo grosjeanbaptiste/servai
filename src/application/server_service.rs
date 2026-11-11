@@ -4,6 +4,8 @@ use std::sync::Arc;
 pub use crate::ports::inbound::server_admin::RegisterServerCommand;
 use crate::adapters::outbound::{
     ansible::MockAnsibleEngine,
+    dns::MockDnsProvider,
+    tls::MockTlsManager,
     wireguard::MockWireGuardEngine,
 };
 use crate::domain::{
@@ -13,13 +15,16 @@ use crate::domain::{
     },
     errors::DomainError,
     server::{HostAddress, Server, ServerId, ServerMetrics, ServerName, ServerStatus, ServiceAction, ServiceStatus},
+    tls::TlsCertificate,
 };
 use crate::ports::{
     inbound::server_admin::ServerAdminPort,
     outbound::{
         ansible_engine::AnsibleEnginePort,
+        dns_provider::DnsProviderPort,
         server_executor::{CommandResult, ServerExecutorPort},
         server_store::ServerStorePort,
+        tls_manager::TlsManagerPort,
         wireguard_engine::WireGuardEnginePort,
     },
 };
@@ -29,6 +34,8 @@ pub struct ServerService {
     executor: Arc<dyn ServerExecutorPort>,
     ansible_engine: Arc<dyn AnsibleEnginePort>,
     wireguard_engine: Arc<dyn WireGuardEnginePort>,
+    dns_provider: Arc<dyn DnsProviderPort>,
+    tls_manager: Arc<dyn TlsManagerPort>,
 }
 
 impl ServerService {
@@ -68,11 +75,23 @@ impl ServerService {
             executor,
             ansible_engine,
             wireguard_engine,
+            dns_provider: Arc::new(MockDnsProvider::default()),
+            tls_manager: Arc::new(MockTlsManager::default()),
         }
     }
 
     pub fn with_wireguard_engine(mut self, engine: Arc<dyn WireGuardEnginePort>) -> Self {
         self.wireguard_engine = engine;
+        self
+    }
+
+    pub fn with_dns_provider(mut self, provider: Arc<dyn DnsProviderPort>) -> Self {
+        self.dns_provider = provider;
+        self
+    }
+
+    pub fn with_tls_manager(mut self, manager: Arc<dyn TlsManagerPort>) -> Self {
+        self.tls_manager = manager;
         self
     }
 }
@@ -297,5 +316,44 @@ impl ServerAdminPort for ServerService {
 
     async fn generate_wireguard_keypair(&self) -> Result<(String, String), DomainError> {
         self.wireguard_engine.generate_keypair().await
+    }
+
+    async fn bind_server_domain(
+        &self,
+        id: &ServerId,
+        domain: &str,
+    ) -> Result<TlsCertificate, DomainError> {
+        let server = self.get_server(id).await?;
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot bind domain to offline server {}",
+                id
+            )));
+        }
+
+        // 1. Point DNS A record to server IP
+        let server_ip = server.host().ip();
+        let record = crate::domain::dns::DnsRecord::new(
+            format!("rec-{}", domain.replace('.', "-")),
+            domain,
+            crate::domain::dns::DnsRecordType::A,
+            server_ip,
+            crate::domain::dns::Ttl::standard(),
+            None,
+        )?;
+
+        let _ = self.dns_provider.upsert_record(domain, &record).await;
+
+        // 2. Request / issue TLS Certificate
+        let cert = self
+            .tls_manager
+            .request_certificate(
+                domain,
+                vec![format!("*.{}", domain)],
+                crate::domain::tls::ChallengeType::Dns01,
+            )
+            .await?;
+
+        Ok(cert)
     }
 }
