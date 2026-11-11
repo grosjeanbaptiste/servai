@@ -9,3 +9,4 @@ pub mod repository;
 pub mod server;
 pub mod stack;
 pub mod tls;
+pub mod workflow;

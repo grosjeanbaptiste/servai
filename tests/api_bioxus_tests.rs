@@ -1865,6 +1865,350 @@ async fn test_bioxus_api_bind_server_domain_and_auto_tls() {
     assert_eq!(cert_json["days_remaining"], 90);
 }
 
+#[tokio::test]
+async fn test_bioxus_api_complete_orchestration_endpoints() {
+    let app = setup_test_app();
+
+    // 1. Register a server and bring online
+    let s_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/servers")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "orch-node-01",
+                        "ip": "10.0.1.20",
+                        "port": 22,
+                        "credentials": "Agent",
+                        "tags": ["web", "core"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(s_res.status(), StatusCode::CREATED);
+    let s_json: Value = serde_json::from_slice(
+        &s_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let server_id = s_json["id"].as_str().unwrap().to_string();
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/servers/{}/health", server_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 2. Register a repository
+    let repo_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/repos")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "base-hardening",
+                        "url": "https://github.com/dev-sec/ansible-collection-hardening.git",
+                        "target_ref": { "Branch": "main" },
+                        "kind": "Playbook"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(repo_res.status(), StatusCode::CREATED);
+    let repo_json: Value = serde_json::from_slice(
+        &repo_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let repo_id = repo_json["id"].as_str().unwrap().to_string();
+
+    // 3. Trigger orchestration (POST /api/v1/orchestrations)
+    let trig_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/orchestrations")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "server_id": server_id,
+                        "repo_id": repo_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(trig_res.status(), StatusCode::CREATED);
+    let job_json: Value = serde_json::from_slice(
+        &trig_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let job_id = job_json["id"].as_str().unwrap().to_string();
+
+    // 4. List orchestrations (GET /api/v1/orchestrations)
+    let list_jobs_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/orchestrations")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list_jobs_res.status(), StatusCode::OK);
+    let jobs_arr: Value = serde_json::from_slice(
+        &list_jobs_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert!(!jobs_arr.as_array().unwrap().is_empty());
+
+    // 5. Get orchestration logs (GET /api/v1/orchestrations/:id/logs)
+    let logs_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/orchestrations/{}/logs", job_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(logs_res.status(), StatusCode::OK);
+    let logs_json: Value = serde_json::from_slice(
+        &logs_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(logs_json["job_id"], job_id);
+
+    // 6. Create workflow (POST /api/v1/workflows)
+    let wf_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/workflows")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "full-stack-bootstrap",
+                        "description": "Bootstrap and configure all services",
+                        "steps": [
+                            {
+                                "name": "disk-check",
+                                "description": "Ensure disk space",
+                                "action": {
+                                    "ShellCommand": {
+                                        "command": "df -h"
+                                    }
+                                }
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(wf_res.status(), StatusCode::CREATED);
+    let wf_json: Value = serde_json::from_slice(
+        &wf_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let wf_id = wf_json["id"].as_str().unwrap().to_string();
+
+    // 7. List workflows (GET /api/v1/workflows)
+    let list_wf_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/workflows")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list_wf_res.status(), StatusCode::OK);
+
+    // 8. Execute workflow (POST /api/v1/workflows/:id/execute)
+    let exec_wf_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/workflows/{}/execute", wf_id))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "server_id": server_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(exec_wf_res.status(), StatusCode::CREATED);
+
+    // 9. Fleet rollout (POST /api/v1/orchestrations/fleet)
+    let fleet_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/orchestrations/fleet")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "target_tag": "web",
+                        "server_ids": [],
+                        "strategy": "Parallel",
+                        "action": {
+                            "ShellCommand": {
+                                "command": "uname -a"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(fleet_res.status(), StatusCode::OK);
+    let fleet_json: Value = serde_json::from_slice(
+        &fleet_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(fleet_json["succeeded_count"], 1);
+
+    // 10. Create schedule (POST /api/v1/schedules)
+    let sched_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/schedules")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "name": "daily-telemetry-cleanup",
+                        "cron_expression": "0 3 * * *",
+                        "server_id": server_id,
+                        "action": {
+                            "ShellCommand": {
+                                "command": "journalctl --vacuum-time=7d"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(sched_res.status(), StatusCode::CREATED);
+    let sched_json: Value = serde_json::from_slice(
+        &sched_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    let sched_id = sched_json["id"].as_str().unwrap().to_string();
+
+    // 11. Run schedule now (POST /api/v1/schedules/:id/run)
+    let run_sched_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/schedules/{}/run", sched_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(run_sched_res.status(), StatusCode::CREATED);
+
+    // 12. Delete schedule (DELETE /api/v1/schedules/:id)
+    let del_sched_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/schedules/{}", sched_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(del_sched_res.status(), StatusCode::NO_CONTENT);
+
+    // 13. Reconcile server state (POST /api/v1/orchestrations/reconcile)
+    let recon_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/orchestrations/reconcile")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "server_id": server_id,
+                        "required_packages": ["dev-sec-hardening"],
+                        "bound_domain": "app.bioxus.cloud",
+                        "wireguard_enabled": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(recon_res.status(), StatusCode::OK);
+    let recon_json: Value = serde_json::from_slice(
+        &recon_res.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert_eq!(recon_json["server_id"], server_id);
+    assert!(recon_json["drift_detected"].as_bool().unwrap());
+    assert_eq!(recon_json["remediation_jobs"].as_array().unwrap().len(), 3);
+}
+
 
 
 

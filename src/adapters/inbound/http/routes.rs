@@ -21,7 +21,11 @@ use crate::adapters::inbound::http::{
         run_ansible_module_handler, run_ansible_playbook_handler,
     },
     orchestration_handlers::{
-        cancel_orchestration, detect_drift_handler, get_orchestration, trigger_orchestration,
+        cancel_orchestration, create_schedule_handler, create_workflow_handler,
+        delete_schedule_handler, detect_drift_handler, execute_fleet_rollout_handler,
+        execute_workflow_handler, get_orchestration, get_orchestration_logs, get_schedule_handler,
+        get_workflow_handler, list_orchestrations, list_schedules_handler, list_workflows_handler,
+        reconcile_server_state_handler, run_schedule_handler, trigger_orchestration,
     },
     registrar_handlers::{
         check_availability_handler, get_domain_handler, list_domains_handler,
@@ -125,10 +129,21 @@ pub fn create_router_full(
         // Multi-repo stacks
         .route("/api/v1/stacks", post(create_stack).get(list_stacks))
         // Orchestration routes
-        .route("/api/v1/orchestrations", post(trigger_orchestration))
+        .route("/api/v1/orchestrations", post(trigger_orchestration).get(list_orchestrations))
         .route("/api/v1/orchestrations/{id}", get(get_orchestration))
+        .route("/api/v1/orchestrations/{id}/logs", get(get_orchestration_logs))
         .route("/api/v1/orchestrations/{id}/cancel", post(cancel_orchestration))
         .route("/api/v1/orchestrations/drift", post(detect_drift_handler))
+        .route("/api/v1/orchestrations/fleet", post(execute_fleet_rollout_handler))
+        .route("/api/v1/orchestrations/reconcile", post(reconcile_server_state_handler))
+        // Custom Workflow Pipelines (for Bioxus)
+        .route("/api/v1/workflows", post(create_workflow_handler).get(list_workflows_handler))
+        .route("/api/v1/workflows/{id}", get(get_workflow_handler))
+        .route("/api/v1/workflows/{id}/execute", post(execute_workflow_handler))
+        // Scheduled Automations (for Bioxus)
+        .route("/api/v1/schedules", post(create_schedule_handler).get(list_schedules_handler))
+        .route("/api/v1/schedules/{id}", get(get_schedule_handler).delete(delete_schedule_handler))
+        .route("/api/v1/schedules/{id}/run", post(run_schedule_handler))
         // OpenTofu orchestration routes (for Bioxus)
         .route("/api/v1/tofu/plan", post(plan_tofu_handler))
         .route("/api/v1/tofu/apply", post(apply_tofu_handler))

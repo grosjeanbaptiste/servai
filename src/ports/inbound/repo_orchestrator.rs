@@ -18,6 +18,11 @@ use crate::domain::{
     repository::{DriftReport, GitRef, ManagedRepository, RepoId, RepoKind},
     server::ServerId,
     stack::{MultiRepoStack, StackId, StackRepoEntry},
+    workflow::{
+        DesiredServerState, FleetJobResult, FleetRolloutCommand, JobExecutionLogs,
+        ReconciliationResult, ScheduledJob, ScheduledJobCommand, ScheduleId,
+        WorkflowDefinition, WorkflowId, WorkflowStep,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,4 +156,49 @@ pub trait RepoOrchestratorPort: Send + Sync {
     async fn list_crossplane_providers(
         &self,
     ) -> Result<Vec<CrossplaneProviderStatus>, DomainError>;
+
+    // Orchestration Job Listing & Logs
+    async fn list_jobs(
+        &self,
+        server_id: Option<&ServerId>,
+        status: Option<crate::domain::orchestration::ExecutionStatus>,
+    ) -> Result<Vec<OrchestrationJob>, DomainError>;
+    async fn get_job_logs(&self, id: &JobId) -> Result<JobExecutionLogs, DomainError>;
+
+    // Custom Workflow Pipelines
+    async fn create_workflow(
+        &self,
+        name: &str,
+        description: &str,
+        steps: Vec<WorkflowStep>,
+    ) -> Result<WorkflowDefinition, DomainError>;
+    async fn list_workflows(&self) -> Result<Vec<WorkflowDefinition>, DomainError>;
+    async fn get_workflow(&self, id: &WorkflowId) -> Result<WorkflowDefinition, DomainError>;
+    async fn execute_workflow(
+        &self,
+        server_id: &ServerId,
+        workflow_id: &WorkflowId,
+    ) -> Result<OrchestrationJob, DomainError>;
+
+    // Fleet / Multi-server Rollout
+    async fn execute_fleet_rollout(
+        &self,
+        cmd: FleetRolloutCommand,
+    ) -> Result<FleetJobResult, DomainError>;
+
+    // Schedules / Recurring Orchestrations
+    async fn create_schedule(
+        &self,
+        cmd: ScheduledJobCommand,
+    ) -> Result<ScheduledJob, DomainError>;
+    async fn list_schedules(&self) -> Result<Vec<ScheduledJob>, DomainError>;
+    async fn get_schedule(&self, id: &ScheduleId) -> Result<ScheduledJob, DomainError>;
+    async fn delete_schedule(&self, id: &ScheduleId) -> Result<(), DomainError>;
+    async fn run_schedule_now(&self, id: &ScheduleId) -> Result<OrchestrationJob, DomainError>;
+
+    // Declarative Desired State Reconciliation
+    async fn reconcile_server_state(
+        &self,
+        state: DesiredServerState,
+    ) -> Result<ReconciliationResult, DomainError>;
 }

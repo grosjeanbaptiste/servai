@@ -2,7 +2,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg?logo=rust)](https://www.rust-lang.org)
 [![TDD](https://img.shields.io/badge/methodology-100%25%20Pure%20TDD-brightgreen.svg)](https://en.wikipedia.org/wiki/Test-driven_development)
-[![Tests](https://img.shields.io/badge/tests-71%2F71%20passing-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-79%2F79%20passing-success.svg)](tests/)
 [![Architecture](https://img.shields.io/badge/architecture-Hexagonal%20%28Ports%20%26%20Adapters%29-blue.svg)](#-architecture-hexagonale)
 [![UI](https://img.shields.io/badge/UI-Bioxus%20Ready-6f42c1.svg)](#-endpoints-api-bioxus)
 
@@ -80,9 +80,16 @@ Le projet expose une API REST réactive conçue pour alimenter directement l'int
   - `homelab-private-cloud` : Hardening + Docker + WireGuard VPN + Nextcloud + Vaultwarden.
 - **Multi-Repo Stacks** : Combinaison de dépôts hétérogènes dans un pipeline unifié avec étapes compensatoires de rollback inversé en cas d'erreur.
 
+### 4. Moteur d'Orchestration Complet (Workflows, Flottes & Réconciliation)
+- **Pipelines de Workflows Personnalisés** : Définition déclarative de séquences multi-étapes combinant commandes shell distantes, mises à jour DNS temps réel, healthchecks HTTP, actions systemd et installation de paquets.
+- **Déploiements en Flotte (Multi-Server Rollouts)** : Ciblage dynamique par tags de serveurs (ex: `web-prod`, `db-cluster`) ou listes explicites d'identifiants avec stratégies d'exécution `Parallel` ou `Rolling` (déploiement progressif avec arrêt en cas d'erreur).
+- **Tâches Automatisées Programmées (Cron & Schedules)** : Planification récurrente d'orchestrations avec suivi du cycle de vie et déclenchement manuel immédiat.
+- **Réconciliation Déclarative d'État Désiré (Auto-Healing)** : Détection d'écart entre l'état réel du serveur et son état cible (paquets manquants, domaine non lié, interface VPN inactive) avec déclenchement automatique d'un job de remédiation unifié.
+- **Traçabilité & Observabilité Granulaire** : Historique complet des jobs avec filtres avancés (`server_id`, `status`) et restitution détaillée des logs d'exécution par étape (durée en millisecondes, stdout, stderr, timestamps).
+
 ---
 
-## 🧪 Tests TDD (71/71 Passing - 100% Couverture)
+## 🧪 Tests TDD (79/79 Passing - 100% Couverture)
 
 L'intégralité du projet est développée en **Test-Driven Development pur** (Red $\rightarrow$ Green $\rightarrow$ Refactor) :
 
@@ -90,18 +97,19 @@ L'intégralité du projet est développée en **Test-Driven Development pur** (R
 cargo test
 ```
 
-### Découpage des 8 suites de tests :
+### Découpage des 9 suites de tests :
 
 | Suite de test | Tests | Couverture fonctionnelle |
 | :--- | :---: | :--- |
 | [`tests/domain_tests.rs`](tests/domain_tests.rs) | **13** | Machine à états du serveur, verrous de concurrence, validation des specs, métriques, rollback automatique, détection de dérive (drift). |
 | [`tests/catalog_tests.rs`](tests/catalog_tests.rs) | **2** | Validation des recettes d'administration, métadonnées, compatibilité des distributions Linux. |
 | [`tests/inspector_and_stack_tests.rs`](tests/inspector_and_stack_tests.rs) | **3** | Détection automatique des manifestes (Ansible, Compose, Tofu), compilation des étapes multi-dépôts. |
-| [`tests/registry_tests.rs`](tests/registry_tests.rs) | **3** | Indexation multi-sources, résolution arborescente de dépendances, composition de profils de serveur. |
+| [`tests/registry_tests.rs`](tests/registry_tests.rs) | **4** | Indexation multi-sources, résolution arborescente de dépendances, composition de profils de serveur. |
 | [`tests/engine_tests.rs`](tests/engine_tests.rs) | **8** | Moteurs OpenTofu (plan, apply, destroy, state), Ansible (playbooks, task events, modules, facts), Crossplane (claims, readiness, managed resources) et WireGuard (interfaces, pairs, trafic). |
 | [`tests/dns_and_registrar_tests.rs`](tests/dns_and_registrar_tests.rs) | **7** | Enregistrement de domaines, nameservers, zones DNS, types d'enregistrements (A, AAAA, MX, TXT, etc.), TTL, DNSSEC, propagation, certificats TLS et liaison serveur-domaine (`bind_server_domain`). |
+| [`tests/complete_orchestration_tests.rs`](tests/complete_orchestration_tests.rs) | **5** | Pipelines de workflows personnalisés, déploiements de flotte (stratégies Parallel / Rolling), automations planifiées (schedules), logs d'exécution détaillés et réconciliation d'état désiré (auto-healing). |
 | [`tests/application_tests.rs`](tests/application_tests.rs) | **22** | Cas d'usage applicatifs complets : administration, healthchecks, services systemd, rollback, catalogue, registry, stacks, OpenTofu, Ansible, Crossplane, WireGuard. |
-| [`tests/api_bioxus_tests.rs`](tests/api_bioxus_tests.rs) | **14** | Contrats REST complets pour l'UI Bioxus (codes HTTP 200, 201, 204, 400, 404, 409, 422, endpoints serveurs, domaines, DNS, TLS, moteurs et orchestrations). |
+| [`tests/api_bioxus_tests.rs`](tests/api_bioxus_tests.rs) | **15** | Contrats REST complets pour l'UI Bioxus (codes HTTP 200, 201, 204, 400, 404, 409, 422, endpoints serveurs, domaines, DNS, TLS, moteurs, workflows, flottes, schedules et réconciliation). |
 
 ---
 
@@ -174,7 +182,7 @@ L'API REST expose tous les services nécessaires à l'interface d'administration
 | `GET` | `/api/v1/crossplane/resources` | Lister les ressources managées Cloud (`Managed Resources`) |
 | `GET` | `/api/v1/crossplane/providers` | Inspecter la santé des providers Crossplane (`provider-aws`, etc.) |
 
-### 📦 Registre, Presets, Stacks & Orchestrations
+### 📦 Registre, Presets, Stacks & Recettes
 | Méthode | Route | Description |
 | :--- | :--- | :--- |
 | `GET` | `/api/v1/registry/search` | Rechercher dans l'écosystème de dépôts (Galaxy, LinuxServer, GitHub) |
@@ -190,10 +198,27 @@ L'API REST expose tous les services nécessaires à l'interface d'administration
 | `POST` | `/api/v1/repos` | Déclarer un dépôt personnalisé (Git/Ansible/Compose/Tofu) |
 | `GET` | `/api/v1/repos` | Lister les dépôts déclarés |
 | `POST` | `/api/v1/repos/{id}/sync` | Synchroniser le dépôt Git |
-| `POST` | `/api/v1/orchestrations` | Déclencher un job d'orchestration |
-| `GET` | `/api/v1/orchestrations/{id}` | Suivre l'avancement et les logs d'un job |
+
+### 🔄 Orchestration Avancée, Workflows, Flottes & Programmation
+| Méthode | Route | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/v1/orchestrations` | Déclencher un job d'orchestration classique |
+| `GET` | `/api/v1/orchestrations` | Lister les jobs avec filtres optionnels (`?server_id=...&status=...`) |
+| `GET` | `/api/v1/orchestrations/{id}` | Suivre l'avancement d'un job d'orchestration |
+| `GET` | `/api/v1/orchestrations/{id}/logs` | Obtenir les logs détaillés par étape (durée ms, stdout, stderr) |
 | `POST` | `/api/v1/orchestrations/{id}/cancel` | Annuler un job en cours avec rollback compensatoire |
 | `POST` | `/api/v1/orchestrations/drift` | Détecter les dérives de configuration (Drift) |
+| `POST` | `/api/v1/orchestrations/fleet` | Exécuter une commande sur une flotte de serveurs (par tags ou IDs, Parallel / Rolling) |
+| `POST` | `/api/v1/orchestrations/reconcile` | Réconcilier déclarativement l'état désiré d'un serveur (auto-healing) |
+| `POST` | `/api/v1/workflows` | Créer un pipeline de workflow personnalisé multi-étapes |
+| `GET` | `/api/v1/workflows` | Lister les pipelines de workflows enregistrés |
+| `GET` | `/api/v1/workflows/{id}` | Consulter la définition d'un pipeline |
+| `POST` | `/api/v1/workflows/{id}/execute` | Exécuter un pipeline de workflow sur un serveur cible |
+| `POST` | `/api/v1/schedules` | Planifier une tâche d'orchestration récurrente (cron) |
+| `GET` | `/api/v1/schedules` | Lister les planifications actives |
+| `GET` | `/api/v1/schedules/{id}` | Consulter le statut d'une planification |
+| `DELETE` | `/api/v1/schedules/{id}` | Supprimer une planification |
+| `POST` | `/api/v1/schedules/{id}/run` | Déclencher immédiatement une tâche planifiée |
 
 ---
 

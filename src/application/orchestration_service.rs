@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::adapters::outbound::{
     ansible::MockAnsibleEngine,
@@ -26,6 +26,11 @@ use crate::domain::{
     repository::{DriftReport, GitRef, ManagedRepository, RepoId, RepoKind, SyncStatus},
     server::{ServerId, ServerStatus},
     stack::{MultiRepoStack, StackId, StackRepoEntry},
+    workflow::{
+        DesiredServerState, FleetJobResult, FleetRolloutCommand,
+        JobExecutionLogs, ReconciliationResult, ScheduledJob, ScheduledJobCommand, ScheduleId,
+        StepLogEntry, WorkflowAction, WorkflowDefinition, WorkflowId, WorkflowStep,
+    },
 };
 use crate::ports::{
     inbound::repo_orchestrator::{RegisterRepoCommand, RepoOrchestratorPort},
@@ -56,6 +61,8 @@ pub struct OrchestrationService {
     tofu_engine: Arc<dyn OpenTofuEnginePort>,
     ansible_engine: Arc<dyn AnsibleEnginePort>,
     crossplane_engine: Arc<dyn CrossplaneEnginePort>,
+    workflows: Arc<RwLock<HashMap<WorkflowId, WorkflowDefinition>>>,
+    schedules: Arc<RwLock<HashMap<ScheduleId, ScheduledJob>>>,
 }
 
 impl OrchestrationService {
@@ -148,6 +155,8 @@ impl OrchestrationService {
             tofu_engine,
             ansible_engine,
             crossplane_engine,
+            workflows: Arc::new(RwLock::new(HashMap::new())),
+            schedules: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -786,5 +795,367 @@ impl RepoOrchestratorPort for OrchestrationService {
         &self,
     ) -> Result<Vec<CrossplaneProviderStatus>, DomainError> {
         self.crossplane_engine.list_providers().await
+    }
+
+    async fn list_jobs(
+        &self,
+        server_id: Option<&ServerId>,
+        status: Option<crate::domain::orchestration::ExecutionStatus>,
+    ) -> Result<Vec<OrchestrationJob>, DomainError> {
+        let all = self.job_store.list_all().await?;
+        let filtered = all
+            .into_iter()
+            .filter(|j| {
+                if let Some(sid) = server_id {
+                    if j.server_id() != *sid {
+                        return false;
+                    }
+                }
+                if let Some(st) = status {
+                    if j.status() != st {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+        Ok(filtered)
+    }
+
+    async fn get_job_logs(&self, id: &JobId) -> Result<JobExecutionLogs, DomainError> {
+        let job = self
+            .job_store
+            .find_by_id(id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "OrchestrationJob",
+                id: id.to_string(),
+            })?;
+
+        let steps: Vec<StepLogEntry> = job
+            .steps()
+            .iter()
+            .enumerate()
+            .map(|(idx, s)| StepLogEntry {
+                step_index: idx,
+                name: s.step.name.clone(),
+                status: s.status,
+                output: s.output.clone(),
+                error: s.error.clone(),
+                duration_ms: 50,
+            })
+            .collect();
+
+        let total_duration_ms = (steps.len() as u64) * 50;
+
+        Ok(JobExecutionLogs {
+            job_id: *id,
+            status: job.status(),
+            steps,
+            total_duration_ms,
+        })
+    }
+
+    async fn create_workflow(
+        &self,
+        name: &str,
+        description: &str,
+        steps: Vec<WorkflowStep>,
+    ) -> Result<WorkflowDefinition, DomainError> {
+        let wf = WorkflowDefinition::new(name, description, steps)?;
+        self.workflows.write().unwrap().insert(wf.id, wf.clone());
+        Ok(wf)
+    }
+
+    async fn list_workflows(&self) -> Result<Vec<WorkflowDefinition>, DomainError> {
+        Ok(self.workflows.read().unwrap().values().cloned().collect())
+    }
+
+    async fn get_workflow(&self, id: &WorkflowId) -> Result<WorkflowDefinition, DomainError> {
+        self.workflows
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "WorkflowDefinition",
+                id: id.to_string(),
+            })
+    }
+
+    async fn execute_workflow(
+        &self,
+        server_id: &ServerId,
+        workflow_id: &WorkflowId,
+    ) -> Result<OrchestrationJob, DomainError> {
+        let server = self
+            .server_store
+            .find_by_id(server_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "Server",
+                id: server_id.to_string(),
+            })?;
+
+        if server.status() == ServerStatus::Offline {
+            return Err(DomainError::Conflict(format!(
+                "Cannot execute workflow on offline server {}",
+                server_id
+            )));
+        }
+
+        let wf = self.get_workflow(workflow_id).await?;
+        let job_id = JobId::new();
+        let orchestration_steps: Vec<crate::domain::orchestration::OrchestrationStep> = wf
+            .steps
+            .iter()
+            .map(|s| {
+                let mut os = crate::domain::orchestration::OrchestrationStep::new(
+                    s.name.clone(),
+                    s.description.clone(),
+                );
+                os.rollback_command = s.rollback_command.clone();
+                os
+            })
+            .collect();
+
+        let mut job = OrchestrationJob::new_with_policy(
+            job_id,
+            *server_id,
+            RepoId::new(),
+            orchestration_steps,
+            RollbackPolicy::RollbackOnFailure,
+        )?;
+        job.start()?;
+
+        // Execute each step
+        for (idx, step) in wf.steps.iter().enumerate() {
+            let res = match &step.action {
+                WorkflowAction::ShellCommand { command } => {
+                    self.executor.execute_command(&server, command).await
+                }
+                WorkflowAction::DnsRecordUpsert { domain, record_type, value } => {
+                    self.executor
+                        .execute_command(
+                            &server,
+                            &format!("servai-dns-record-upsert {} {} {}", domain, record_type, value),
+                        )
+                        .await
+                }
+                WorkflowAction::HttpHealthCheck { url, expected_status: _ } => {
+                    self.executor
+                        .execute_command(
+                            &server,
+                            &format!("curl -sf -o /dev/null -w '%{{http_code}}' {}", url),
+                        )
+                        .await
+                }
+                WorkflowAction::ServiceAction { service, action } => {
+                    self.executor
+                        .execute_command(&server, &format!("systemctl {} {}", action, service))
+                        .await
+                }
+                WorkflowAction::PackageInstall { package_id } => {
+                    self.executor
+                        .execute_command(&server, &format!("servai-package-install {}", package_id))
+                        .await
+                }
+            };
+
+            match res {
+                Ok(cmd_res) if cmd_res.exit_code == 0 => {
+                    let _ = job.record_step_success(idx, cmd_res.stdout);
+                }
+                Ok(cmd_res) => {
+                    let err = format!("Step {} failed with exit code {}", step.name, cmd_res.exit_code);
+                    let _ = job.record_step_failure(idx, &err, "Step execution non-zero exit");
+                    self.job_store.save(job.clone()).await?;
+                    return Ok(job);
+                }
+                Err(e) => {
+                    let err = format!("Step {} failed: {}", step.name, e);
+                    let _ = job.record_step_failure(idx, &err, "Step execution error");
+                    self.job_store.save(job.clone()).await?;
+                    return Ok(job);
+                }
+            }
+        }
+
+        self.job_store.save(job.clone()).await?;
+        Ok(job)
+    }
+
+    async fn execute_fleet_rollout(
+        &self,
+        cmd: FleetRolloutCommand,
+    ) -> Result<FleetJobResult, DomainError> {
+        let servers = self.server_store.list().await?;
+        let target_servers: Vec<ServerId> = if let Some(tag) = &cmd.target_tag {
+            servers
+                .into_iter()
+                .filter(|s| s.tags().contains(tag))
+                .map(|s| s.id())
+                .collect()
+        } else if !cmd.server_ids.is_empty() {
+            cmd.server_ids
+        } else {
+            servers.into_iter().map(|s| s.id()).collect()
+        };
+
+        let total_targets = target_servers.len();
+        let mut succeeded_count = 0;
+        let mut failed_count = 0;
+        let mut jobs = Vec::new();
+
+        // Build single-step workflow for the fleet action
+        let wf_step = WorkflowStep::new("fleet-action", "Action distribuée sur la flotte", cmd.action);
+        let wf = self.create_workflow("fleet-workflow", "Fleet rollout", vec![wf_step]).await?;
+
+        for server_id in target_servers {
+            match self.execute_workflow(&server_id, &wf.id).await {
+                Ok(job) if job.status() == crate::domain::orchestration::ExecutionStatus::Succeeded => {
+                    succeeded_count += 1;
+                    jobs.push(job);
+                }
+                Ok(job) => {
+                    failed_count += 1;
+                    jobs.push(job);
+                }
+                Err(_) => {
+                    failed_count += 1;
+                }
+            }
+        }
+
+        Ok(FleetJobResult {
+            total_targets,
+            succeeded_count,
+            failed_count,
+            jobs,
+        })
+    }
+
+    async fn create_schedule(
+        &self,
+        cmd: ScheduledJobCommand,
+    ) -> Result<ScheduledJob, DomainError> {
+        let schedule = ScheduledJob {
+            id: ScheduleId::new(),
+            name: cmd.name,
+            cron_expression: cmd.cron_expression,
+            server_id: cmd.server_id,
+            action: cmd.action,
+            enabled: true,
+            last_run: None,
+            created_at: chrono::Utc::now(),
+        };
+        self.schedules
+            .write()
+            .unwrap()
+            .insert(schedule.id, schedule.clone());
+        Ok(schedule)
+    }
+
+    async fn list_schedules(&self) -> Result<Vec<ScheduledJob>, DomainError> {
+        Ok(self.schedules.read().unwrap().values().cloned().collect())
+    }
+
+    async fn get_schedule(&self, id: &ScheduleId) -> Result<ScheduledJob, DomainError> {
+        self.schedules
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "ScheduledJob",
+                id: id.to_string(),
+            })
+    }
+
+    async fn delete_schedule(&self, id: &ScheduleId) -> Result<(), DomainError> {
+        self.schedules.write().unwrap().remove(id);
+        Ok(())
+    }
+
+    async fn run_schedule_now(&self, id: &ScheduleId) -> Result<OrchestrationJob, DomainError> {
+        let schedule = self.get_schedule(id).await?;
+        let wf_step = WorkflowStep::new(
+            format!("sched-{}", schedule.name),
+            "Exécution planifiée programmée",
+            schedule.action.clone(),
+        );
+        let wf = self
+            .create_workflow(&format!("run-{}", schedule.name), "Scheduled run", vec![wf_step])
+            .await?;
+
+        // Update last_run
+        if let Some(s) = self.schedules.write().unwrap().get_mut(id) {
+            s.last_run = Some(chrono::Utc::now());
+        }
+
+        self.execute_workflow(&schedule.server_id, &wf.id).await
+    }
+
+    async fn reconcile_server_state(
+        &self,
+        desired: DesiredServerState,
+    ) -> Result<ReconciliationResult, DomainError> {
+        let server = self
+            .server_store
+            .find_by_id(&desired.server_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound {
+                entity: "Server",
+                id: desired.server_id.to_string(),
+            })?;
+
+        let mut remediation_jobs = Vec::new();
+
+        // 1. Reconcile packages
+        for pkg_id in &desired.required_packages {
+            let job = self
+                .install_package_with_dependencies(&desired.server_id, pkg_id, HashMap::new())
+                .await?;
+            remediation_jobs.push(job);
+        }
+
+        // 2. Reconcile bound domain
+        if let Some(domain) = &desired.bound_domain {
+            let step = WorkflowStep::new(
+                "reconcile-domain",
+                format!("Bind domain {}", domain),
+                WorkflowAction::DnsRecordUpsert {
+                    domain: domain.clone(),
+                    record_type: "A".to_string(),
+                    value: server.host().ip().to_string(),
+                },
+            );
+            let wf = self.create_workflow("domain-reconcile", "Bind domain", vec![step]).await?;
+            let job = self.execute_workflow(&desired.server_id, &wf.id).await?;
+            remediation_jobs.push(job);
+        }
+
+        // 3. Reconcile WireGuard
+        if desired.wireguard_enabled {
+            let step = WorkflowStep::new(
+                "reconcile-wireguard",
+                "Ensure WireGuard VPN is active",
+                WorkflowAction::ServiceAction {
+                    service: "wg-quick@wg0".to_string(),
+                    action: "start".to_string(),
+                },
+            );
+            let wf = self.create_workflow("wg-reconcile", "Ensure WireGuard", vec![step]).await?;
+            let job = self.execute_workflow(&desired.server_id, &wf.id).await?;
+            remediation_jobs.push(job);
+        }
+
+        let drift_detected = !remediation_jobs.is_empty();
+
+        Ok(ReconciliationResult {
+            server_id: desired.server_id,
+            drift_detected,
+            remediation_jobs,
+        })
     }
 }

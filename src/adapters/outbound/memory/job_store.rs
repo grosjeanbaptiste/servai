@@ -44,4 +44,9 @@ impl JobStorePort for InMemoryJobStore {
             .cloned()
             .collect())
     }
+
+    async fn list_all(&self) -> Result<Vec<OrchestrationJob>, DomainError> {
+        let list = self.jobs.lock().unwrap();
+        Ok(list.clone())
+    }
 }
